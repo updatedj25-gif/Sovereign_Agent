@@ -1,0 +1,49 @@
+Pasted-AI-Coding-Agent-Engineering-UI-UX-Specification-This-do_1782451962525.txt
+AI Coding Agent Engineering & UI/UX Specification
+This document provides a highly structured engineering and UX blueprint for building an autonomous AI coding agent. It covers workspace file actions, secure sandboxing, OAuth-based integrations, task scheduling, and dynamic UI state representation via collapsible accordions.
+1. Core Agent Workflows & Workspace Integrations
+1.1 File Creation & Live Preview System
+To prevent unstable mutations and ensure seamless frontend feedback, the agent and the runtime platform must collaborate through a strict creation-to-preview lifecycle.
+code
+Code
+[Agent Path Resolution] ──> [Structured Tool Call] ──> [Compilation/Verification]
+                                                               │
+[Render UI Iframe]  <──  [Port-Forwarding Proxy] <──  [Dev Server Background Run]
+File Creation Workflow
+Path Resolution: Before performing a write operation, the agent queries the directory tree. It determines the correct framework directory structure to ensure files are saved in logical sub-directories (e.g., placing React components in src/components/ and not the root directory).
+Structured Tool Invocation: The agent avoids executing raw shell commands (like echo "code" > file.js) as they are prone to escaping issues. Instead, it calls a dedicated system-level workspace API:
+code
+JavaScript
+writeFile(path: string, content: string)
+Verification: The agent immediately validates the write operation by executing a syntax check or reading the file back to confirm integrity.
+Live Preview Initialization
+Dependency & Command Analysis: The agent parses workspace configurations (such as package.json or cargo.toml) to locate the appropriate developer server startup command (e.g., npm run dev, vite, or python3 -m http.server).
+Asynchronous Daemon Process: The platform executes the dev command as an asynchronous background process that survives across the agent's turn-taking cycles.
+Dynamic Port Detection: The host system (the container engine or VM hypervisor) monitors network interfaces. When a local port starts listening (e.g., port 3000 or 5173), the host interceptor captures the port mapping.
+Proxy URL Mapping & IFrame Rendering: The host maps the internal port to a public, secure proxy address. The chat client intercepts this event and opens a "Live Preview" panel containing an iframe pointed to that proxy address. The agent is notified that the preview is live, enabling it to update the user.
+1.2 Secure Secrets & API Key Management
+Typing API keys or secrets directly into a chat input is a security risk. The system must segregate credentials from the LLM prompt logs.
+code
+Code
+[Agent Halts] ──> [UI Form Rendered] ──> [User Inputs Key] ──> [Encrypted Env Vault]
+                                                                        │
+[Agent Resumes] <──────────────────────────────────────── [Decrypted Key Read via env]
+Contextual Halt: When the agent detects that a required integration key (such as OPENAI_API_KEY or DATABASE_URL) is missing, it halts execution immediately.
+UI Payload Trigger: Instead of prompting for a text response in the chat, the agent outputs a structured UI command specifying the needed variable names. The frontend catches this command and renders a secure input form in the chat pane.
+Vault Injection:
+The user submits the secret through a masked password field.
+The platform writes this value directly to the environment's secure vault (an encrypted key-value store or a .env file added to .gitignore).
+Context Resumption: Once the secret is written, the platform triggers a signal that updates the runtime environment context. The agent resumes execution, reading the decrypted variable at runtime (e.g., process.env.API_KEY) without exposing it in the plain-text dialogue history.
+1.3 GitHub Integration & Credential Handling
+The agent should never ask for a user's plaintext password or personal access tokens directly. It must rely on system-mediated OAuth scoping.
+Authentication Handshake: The host platform provides a native GitHub OAuth application. The user grants access, permitting scoped writes on designated repositories.
+Token Retrieval & Injection: When the user initiates a repository task, the platform requests an installation access token or OAuth token.
+Scoped Token Injection: The platform securely injects the token as a temporary environment variable (e.g., GITHUB_TOKEN) inside the agent’s execution sandbox.
+Isolated Git Operations: The agent interacts with Git via CLI tools configured with authentication helpers, or by formatting remote URLs to leverage the environment variables directly:
+code
+Bash
+git clone https://x-access-token:${GITHUB_TOKEN}@github.com/username/repository.git
+This process keeps raw access tokens isolated from both user chats and LLM generation traces.
+2. Execution Architecture & Shell Sandboxing
+2.1 Sequential Task Execution Lifecycle
+To guarantee robust automation, the agent divides user re...

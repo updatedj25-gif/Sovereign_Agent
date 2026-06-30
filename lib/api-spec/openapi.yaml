@@ -1,0 +1,443 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.2.0
+  description: API specification — AI Coding Agent platform
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: tasks
+    description: Task group and command log management
+  - name: agent
+    description: AI agent context, streaming, and task execution (Cloudflare Workers AI)
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /tasks:
+    get:
+      operationId: listTaskGroups
+      tags: [tasks]
+      summary: List all task groups
+      responses:
+        "200":
+          description: List of task groups
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TaskGroup"
+    post:
+      operationId: createTaskGroup
+      tags: [tasks]
+      summary: Create a new task group
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTaskGroup"
+      responses:
+        "201":
+          description: Created task group
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskGroup"
+        "400":
+          description: Validation error
+
+  /tasks/{id}:
+    get:
+      operationId: getTaskGroup
+      tags: [tasks]
+      summary: Get a task group with its commands
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Task group with commands
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskGroupWithCommands"
+        "404":
+          description: Not found
+    patch:
+      operationId: updateTaskGroup
+      tags: [tasks]
+      summary: Update task group status or summary
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTaskGroup"
+      responses:
+        "200":
+          description: Updated task group
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskGroup"
+        "404":
+          description: Not found
+    delete:
+      operationId: deleteTaskGroup
+      tags: [tasks]
+      summary: Delete a task group and its commands
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Not found
+
+  /agent/context:
+    get:
+      operationId: getAgentContext
+      tags: [agent]
+      summary: Get full workspace context (tasks, commands, stats, capabilities)
+      responses:
+        "200":
+          description: Workspace context
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentContext"
+
+  /agent/capabilities:
+    get:
+      operationId: getAgentCapabilities
+      tags: [agent]
+      summary: List all available agent API capabilities
+      responses:
+        "200":
+          description: Capabilities list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  capabilities:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AgentCapability"
+                required: [capabilities]
+
+  /agent/stream:
+    post:
+      operationId: agentStream
+      tags: [agent]
+      summary: Stream agent reasoning via SSE (Cloudflare Workers AI)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentStreamRequest"
+      responses:
+        "200":
+          description: SSE stream of agent tokens and task-group updates
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "400":
+          description: Validation error
+        "503":
+          description: Cloudflare credentials not configured
+
+  /agent/tasks/summary:
+    get:
+      operationId: getAgentTaskSummary
+      tags: [agent]
+      summary: AI-generated summary of current task queue state
+      responses:
+        "200":
+          description: Summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentSummary"
+        "503":
+          description: Cloudflare credentials not configured
+
+  /agent/tasks/execute:
+    post:
+      operationId: executeAgentTask
+      tags: [agent]
+      summary: Run AI reasoning on a specific task group
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentExecuteRequest"
+      responses:
+        "200":
+          description: AI response and persisted task updates
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentExecuteResponse"
+        "400":
+          description: Validation error
+        "404":
+          description: Task group not found
+        "503":
+          description: Cloudflare credentials not configured
+
+  /tasks/{id}/commands:
+    get:
+      operationId: listCommands
+      tags: [tasks]
+      summary: List commands for a task group
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: List of commands
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Command"
+    post:
+      operationId: addCommand
+      tags: [tasks]
+      summary: Append a command log to a task group
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCommand"
+      responses:
+        "201":
+          description: Created command
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Command"
+        "400":
+          description: Validation error
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+
+    TaskStatus:
+      type: string
+      enum: [pending, running, success, failed]
+
+    TaskGroup:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+        summary:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, title, status, createdAt, updatedAt]
+
+    TaskGroupWithCommands:
+      allOf:
+        - $ref: "#/components/schemas/TaskGroup"
+        - type: object
+          properties:
+            commands:
+              type: array
+              items:
+                $ref: "#/components/schemas/Command"
+          required: [commands]
+
+    CreateTaskGroup:
+      type: object
+      properties:
+        title:
+          type: string
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+        summary:
+          type: string
+          nullable: true
+      required: [title]
+
+    UpdateTaskGroup:
+      type: object
+      properties:
+        title:
+          type: string
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+        summary:
+          type: string
+          nullable: true
+
+    Command:
+      type: object
+      properties:
+        id:
+          type: integer
+        taskGroupId:
+          type: integer
+        cmd:
+          type: string
+        exitCode:
+          type: integer
+          nullable: true
+        stdout:
+          type: string
+        stderr:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, taskGroupId, cmd, stdout, stderr, createdAt]
+
+    AgentCapability:
+      type: object
+      properties:
+        method:
+          type: string
+        path:
+          type: string
+        description:
+          type: string
+      required: [method, path, description]
+
+    AgentStats:
+      type: object
+      properties:
+        total:   { type: integer }
+        pending: { type: integer }
+        running: { type: integer }
+        success: { type: integer }
+        failed:  { type: integer }
+      required: [total, pending, running, success, failed]
+
+    AgentContext:
+      type: object
+      properties:
+        stats:
+          $ref: "#/components/schemas/AgentStats"
+        taskGroups:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskGroupWithCommands"
+        capabilities:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentCapability"
+      required: [stats, taskGroups, capabilities]
+
+    AgentStreamRequest:
+      type: object
+      properties:
+        prompt:
+          type: string
+          minLength: 1
+          maxLength: 4000
+        model:
+          type: string
+      required: [prompt]
+
+    AgentSummary:
+      type: object
+      properties:
+        summary:   { type: string }
+        stats:     { $ref: "#/components/schemas/AgentStats" }
+        taskCount: { type: integer }
+      required: [summary, stats, taskCount]
+
+    AgentExecuteRequest:
+      type: object
+      properties:
+        taskId:
+          type: integer
+        instruction:
+          type: string
+          minLength: 1
+          maxLength: 2000
+      required: [taskId, instruction]
+
+    AgentExecuteResponse:
+      type: object
+      properties:
+        response: { type: string }
+        taskId:   { type: integer }
+      required: [response, taskId]
+
+    CreateCommand:
+      type: object
+      properties:
+        cmd:
+          type: string
+        exitCode:
+          type: integer
+          nullable: true
+        stdout:
+          type: string
+        stderr:
+          type: string
+      required: [cmd]
+

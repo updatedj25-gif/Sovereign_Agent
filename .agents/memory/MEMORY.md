@@ -1,0 +1,1 @@
+- [Cloudflare Agent Engine](cloudflare-agent-engine.md) — CF Workers AI model must NOT be URL-encoded; always use cfAiUrl() helper; agent reads full DB context before every LLM call
