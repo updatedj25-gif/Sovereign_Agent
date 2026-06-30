@@ -1,0 +1,10 @@
+@import "tailwindcss";  
+  
+.bg-cream-gradient {  
+   background: #ffffff;  
+   background-image: linear-gradient(180deg, #3a9fd9 0%, #62b1e4 25%, #ffffff 75%, #ffffff 100%);  
+}  
+  
+.sidebar-transition {  
+   transition: transform 0.3s ease-in-out;  
+} 
