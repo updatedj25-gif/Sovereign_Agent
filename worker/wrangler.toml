@@ -1,0 +1,44 @@
+name               = "sovereign-agent-api"
+main               = "index.js"
+compatibility_date = "2026-06-16"
+compatibility_flags = ["nodejs_compat"]
+
+[observability]
+enabled = true
+
+[ai]
+binding = "AI"
+
+[[d1_databases]]
+binding       = "SOVEREIGN_DB"
+database_name = "sovereign-db"
+database_id   = "0a869fef-8129-426e-bdb8-2bb5bf063b07"
+
+[[kv_namespaces]]
+binding = "SOVEREIGN_KV"
+id      = "ef1462dfa55a47e3923176522cb355a6"
+
+[[r2_buckets]]
+binding     = "LOBES_VAULT"
+bucket_name = "sovereign-master-bucket"
+
+# ── Consolidated Durable Objects (Architecture v3.0) ─────────────────────────
+# FILE_TOOLS_MCP + GIT_TOOLS_MCP + SELF_HEAL_MCP  →  ProjectTools
+# RATE_LIMITER                                     →  AgentSession (in-memory)
+# Sandbox retained as distinct isolation boundary
+
+[durable_objects]
+bindings = [
+  { name = "AGENT_SESSION", class_name = "AgentSession" },
+  { name = "PROJECT_TOOLS", class_name = "ProjectTools" },
+  { name = "Sandbox",       class_name = "Sandbox" }
+]
+
+[[migrations]]
+tag         = "v1-consolidated"
+new_classes = ["AgentSession", "ProjectTools", "Sandbox"]
+
+[vars]
+ENVIRONMENT    = "production"
+WORKER_VERSION = "3.0.0"
+PAGES_ORIGIN   = "https://sovereign-agent-ui.trinityceo717.workers.dev"
