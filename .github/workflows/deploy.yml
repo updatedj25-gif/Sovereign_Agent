@@ -1,0 +1,54 @@
+name: "Deploy · Sovereign Agent"
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+
+  # ── Frontend: Cloudflare Worker (Assets) ──────────────────────────────────
+  deploy-frontend:
+    name: "Worker → sovereign-agent-ui"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Wrangler
+        run: npm install -g wrangler@latest
+
+      - name: Deploy frontend Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: wrangler deploy --config wrangler.jsonc
+
+      - name: Summary
+        run: |
+          echo "### ✅ Frontend → https://sovereign-agent-ui.trinityceo717.workers.dev" >> $GITHUB_STEP_SUMMARY
+          echo "Commit: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+
+  # ── Backend: Cloudflare Worker API ────────────────────────────────────────
+  deploy-backend:
+    name: "Worker → sovereign-agent-api"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Wrangler
+        run: npm install -g wrangler@latest
+
+      - name: Deploy backend Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          cd worker
+          wrangler deploy
+
+      - name: Summary
+        run: |
+          echo "### ✅ Backend API → https://sovereign-agent-api.trinityceo717.workers.dev" >> $GITHUB_STEP_SUMMARY
+          echo "Health: https://sovereign-agent-api.trinityceo717.workers.dev/api/health" >> $GITHUB_STEP_SUMMARY
