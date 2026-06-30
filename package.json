@@ -1,0 +1,36 @@
+{
+  "name": "sovereign-agent",
+  "version": "2.0.0",
+  "description": "Sovereign Coding Agent — Cloudflare Pages + Workers full-stack",
+  "main": "index.js",
+  "private": true,
+  "scripts": {
+    "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"$npm_config_user_agent\" in pnpm/*) ;; *) echo \"Use pnpm instead\" >&2; exit 1 ;; esac'",
+    "build": "pnpm run typecheck && pnpm -r --if-present run build",
+    "typecheck:libs": "tsc --build",
+    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck",
+    "dev": "node build.js && wrangler dev",
+    "worker:dev": "cd worker && npx wrangler dev --local",
+    "worker:deploy": "cd worker && npx wrangler deploy",
+    "worker:tail": "cd worker && npx wrangler tail",
+    "pages:deploy": "wrangler pages deploy src --project-name=sovereign-agent",
+    "deploy": "node build.js && wrangler deploy",
+    "deploy:all": "npm run build && npm run pages:deploy && npm run worker:deploy"
+  },
+  "keywords": [
+    "cloudflare",
+    "pages",
+    "workers",
+    "ai-agent"
+  ],
+  "author": "Trinity-Ceo",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.3.1",
+    "tailwindcss": "^4.3.1",
+    "wrangler": "^3.114.0",
+    "prettier": "^3.8.4",
+    "typescript": "~5.9.3"
+  }
+}
