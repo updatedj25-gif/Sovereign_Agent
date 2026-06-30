@@ -1,0 +1,55 @@
+# Dependencies
+node_modules/
+
+# Compiled output
+dist/
+tmp/
+out-tsc/
+*.tsbuildinfo
+.expo
+.expo-shared
+
+# Logs and System Files
+*.log
+npm-debug.log
+yarn-error.log
+testem.log
+.DS_Store
+*.swp
+Thumbs.db
+
+# Wrangler local dev state
+.wrangler/
+worker/.wrangler/
+
+# Local DBs and generated files
+workspaces.db
+*.db-shm
+*.db-wal
+repomix-output.xml
+
+# IDEs and Editors
+/.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# Misc and Environment
+/.sass-cache
+/connect.lock
+/coverage
+/libpeerconnection.log
+/typings
+.cursor/rules/nx-rules.mdc
+.github/instructions/nx.instructions.md
+.cache/
+.local/
+sovereign-agent@1.0.0
