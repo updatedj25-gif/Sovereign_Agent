@@ -1,0 +1,870 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sovereign Coding Agent</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* ── Viewport: use dvh so mobile browser chrome is excluded ── */
+        html {
+            height: 100%;
+            /* iOS Safari fallback */
+            height: -webkit-fill-available;
+        }
+        body {
+            height: 100%;
+            height: 100dvh;          /* Chrome 108+, FF 109+, Safari 15.4+ */
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            /* Prevent rubber-band scroll from exposing blank area */
+            overscroll-behavior: none;
+            /* Respect notch / home-bar on modern phones */
+            padding-bottom: env(safe-area-inset-bottom, 0px);
+        }
+
+        .sidebar-transition { transition: transform 0.3s cubic-bezier(0.4,0,0.2,1); }
+        .tab-active { background: #f5f5f4; color: #1c1917; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+        .panel-slide { animation: slideUp 0.2s ease-out; }
+        @keyframes slideUp { from { opacity:0; transform:translateY(12px); } to { opacity:1; transform:translateY(0); } }
+        .reconnect-pulse { animation: pulse 2s infinite; }
+        @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:.5;} }
+        .file-row:hover { background:#f5f5f4; }
+        .file-row.active { background:#e7e5e4; border-left:2px solid #78716c; }
+        textarea { resize:none; }
+        ::-webkit-scrollbar { width:4px; } ::-webkit-scrollbar-thumb { background:#d4d4d4; border-radius:4px; }
+        .drop-zone { border:2px dashed #d4d4d4; }
+        .drop-zone.drag-over { border-color:#3b82f6; background:#eff6ff; }
+        .spinner { animation:spin 1s linear infinite; }
+        @keyframes spin { to { transform:rotate(360deg); } }
+
+        /* ── App shell — fills the full visible area ── */
+        #app-shell {
+            display: flex;
+            flex-direction: column;
+            /* dvh primary, vh fallback for old browsers */
+            height: 100vh;
+            height: 100dvh;
+            width: 100%;
+            overflow: hidden;
+            box-sizing: border-box;
+        }
+
+        /* ── Views container grows to fill remaining space ── */
+        #views-container {
+            flex: 1 1 0%;
+            min-height: 0;         /* critical — lets flex children shrink below content size */
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* ── Individual views ── */
+        #view-chat, #view-preview, #view-code {
+            display: none;
+            flex-direction: column;
+            flex: 1 1 0%;
+            min-height: 0;
+            width: 100%;
+            overflow: hidden;
+        }
+        #view-chat.active, #view-preview.active, #view-code.active { display: flex; }
+
+        /* ── Chat scrollable area ── */
+        #chat-scroll-area {
+            flex: 1 1 0%;
+            min-height: 0;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        /* ── Chat footer — never clipped ── */
+        #chat-footer {
+            flex-shrink: 0;
+            padding: 8px 0 12px;
+            /* Extra breathing room above phone home-bar */
+            padding-bottom: max(12px, env(safe-area-inset-bottom, 12px));
+            width: 100%;
+        }
+
+        /* ── Chat textarea ── */
+        #chat-input {
+            min-height: 24px;
+            max-height: 128px;
+            overflow-y: auto;
+            -webkit-user-select: text;
+            user-select: text;
+            pointer-events: auto;
+            line-height: 1.4;
+        }
+
+        /* ── Dropdown always on top ── */
+        #more-dropdown { z-index: 9999; }
+
+        /* ── Hide reconnect banner by default ── */
+        #reconnect-banner { display: none; }
+        #reconnect-banner.show { display: flex; }
+    </style>
+</head>
+<body class="h-screen w-screen bg-gradient-to-br from-slate-100 via-blue-50 to-white overflow-hidden">
+
+<!-- ═══ RECONNECT BANNER ══════════════════════════════════ -->
+<div id="reconnect-banner" class="fixed top-0 left-0 right-0 z-[100] justify-center pt-2 px-4">
+    <div class="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-2.5 flex items-center gap-3 shadow-md">
+        <span class="w-2 h-2 rounded-full bg-amber-500 reconnect-pulse"></span>
+        <div>
+            <p class="text-amber-700 font-semibold text-sm">Reconnecting</p>
+            <p class="text-amber-600 text-xs">Trying to restore connection</p>
+        </div>
+        <svg class="w-4 h-4 text-amber-600 spinner ml-2" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/></svg>
+    </div>
+</div>
+
+<!-- ═══ SIDEBAR OVERLAY ══════════════════════════════════ -->
+<div id="sidebar-overlay" class="fixed inset-0 bg-black/30 z-40 hidden" onclick="closeSidebar()"></div>
+
+<!-- ═══ SIDEBAR ══════════════════════════════════════════ -->
+<div id="sidebar" class="sidebar-transition fixed inset-y-0 left-0 w-72 bg-white border-r border-stone-200 z-50 transform -translate-x-full flex flex-col shadow-2xl">
+    <div class="flex items-center justify-between px-5 py-4 border-b border-stone-100 shrink-0">
+        <div class="flex items-center gap-2">
+            <div class="w-7 h-7 rounded-lg bg-amber-500 flex items-center justify-center shrink-0">
+                <svg class="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+            </div>
+            <span class="font-semibold text-stone-800">Sovereign Agent</span>
+        </div>
+        <button onclick="closeSidebar()" class="p-1.5 hover:bg-stone-100 rounded-lg cursor-pointer">
+            <svg class="w-4 h-4 text-stone-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+    </div>
+    <div class="px-4 pt-4 shrink-0">
+        <button onclick="startNewChat()" class="w-full flex items-center justify-center gap-2 bg-stone-900 hover:bg-stone-800 text-white text-sm font-medium rounded-xl px-4 py-2.5 cursor-pointer transition-colors">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+            New Chat
+        </button>
+    </div>
+    <div class="flex-1 overflow-y-auto px-3 py-3 min-h-0">
+        <p class="text-[10px] font-bold uppercase tracking-widest text-stone-400 px-2 mb-2">Recent Chats</p>
+        <div id="sidebar-chat-history" class="space-y-0.5">
+            <button class="w-full text-left px-3 py-2 text-sm text-stone-700 hover:bg-stone-50 rounded-xl">CEO Strategy Session</button>
+            <button class="w-full text-left px-3 py-2 text-sm text-stone-700 hover:bg-stone-50 rounded-xl">Landing Page Redesign</button>
+            <button class="w-full text-left px-3 py-2 text-sm text-stone-700 hover:bg-stone-50 rounded-xl">Database D1 Migration Plan</button>
+        </div>
+    </div>
+    <div class="border-t border-stone-100 px-3 py-3 space-y-0.5 shrink-0">
+        <button onclick="switchView('code');closeSidebar();" class="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-stone-600 hover:bg-stone-50 rounded-xl cursor-pointer text-left">
+            <svg class="w-4 h-4 text-stone-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>Code Editor
+        </button>
+        <button onclick="switchView('preview');closeSidebar();" class="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-stone-600 hover:bg-stone-50 rounded-xl cursor-pointer text-left">
+            <svg class="w-4 h-4 text-stone-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>Preview
+        </button>
+        <button onclick="openModal('database');closeSidebar();" class="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-stone-600 hover:bg-stone-50 rounded-xl cursor-pointer text-left">
+            <svg class="w-4 h-4 text-stone-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.657-4.03 3-9 3S3 13.657 3 12M21 19c0 1.657-4.03 3-9 3S3 20.657 3 19M21 5v14M3 5v14"/></svg>Database
+        </button>
+    </div>
+    <div class="px-5 py-3 border-t border-stone-100 text-xs text-stone-400 shrink-0">Sovereign Agent v2.0 · Cloudflare Workers AI</div>
+</div>
+
+<!-- ═══ MODAL OVERLAY ════════════════════════════════════ -->
+<div id="modal-overlay" class="fixed inset-0 bg-black/40 z-[60] hidden backdrop-blur-sm" onclick="closeModal()"></div>
+
+<!-- ═══ MODAL PANELS ════════════════════════════════════ -->
+<!-- LOGS MODAL -->
+<div id="modal-logs" class="modal-panel hidden fixed inset-x-4 top-16 bottom-4 z-[70] bg-white rounded-3xl shadow-2xl flex flex-col overflow-hidden max-w-lg mx-auto">
+    <div class="flex items-center justify-between px-5 py-4 border-b border-stone-100 shrink-0">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 bg-blue-100 rounded-xl flex items-center justify-center">
+                <svg class="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+            </div>
+            <h2 class="font-bold text-stone-900">Logs</h2>
+        </div>
+        <div class="flex items-center gap-2">
+            <button class="text-xs text-stone-500 hover:text-stone-700 border border-stone-200 rounded-lg px-3 py-1.5">? Guide</button>
+            <button onclick="closeModal()" class="p-1.5 hover:bg-stone-100 rounded-lg cursor-pointer">
+                <svg class="w-4 h-4 text-stone-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+        </div>
+    </div>
+    <div class="flex-1 overflow-y-auto p-4 space-y-4">
+        <div class="bg-stone-50 rounded-2xl p-4">
+            <div class="flex items-center justify-between mb-3">
+                <div><h3 class="font-bold text-stone-900">Frontend Console Logs</h3></div>
+                <div class="flex items-center gap-2">
+                    <span class="text-stone-500 text-sm">0 entries</span>
+                    <button onclick="refreshConsoleLogs()" class="p-1.5 hover:bg-stone-200 rounded-lg cursor-pointer">
+                        <svg class="w-4 h-4 text-stone-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/></svg>
+                    </button>
+                </div>
+            </div>
+            <div id="frontend-logs-list" class="text-center py-6 text-stone-400 text-sm">
+                <p>No frontend console logs captured yet.</p>
+            </div>
+        </div>
+        <div class="bg-stone-50 rounded-2xl p-4">
+            <h3 class="font-bold text-stone-900 mb-3">Backend Logs</h3>
+            <div class="grid grid-cols-2 gap-2 mb-3">
+                <div>
+                    <label class="text-xs text-stone-500 mb-1 block">Time Range</label>
+                    <select id="log-time-range" class="w-full bg-white border border-stone-200 rounded-xl px-3 py-2 text-sm text-stone-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <option>Last 5 min</option><option>Last 30 min</option><option>Last 1 hour</option><option>Last 24 hours</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="text-xs text-stone-500 mb-1 block">Severity</label>
+                    <select id="log-severity" class="w-full bg-white border border-stone-200 rounded-xl px-3 py-2 text-sm text-stone-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <option>All level</option><option>Error</option><option>Warn</option><option>Info</option>
+                    </select>
+                </div>
+            </div>
+            <button onclick="loadBackendLogs()" class="w-full flex items-center justify-center gap-2 bg-white border border-stone-200 rounded-xl py-2.5 text-sm text-stone-600 hover:bg-stone-50 transition-colors cursor-pointer">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/></svg>
+                Load
+            </button>
+        </div>
+        <div class="bg-stone-50 rounded-2xl p-4">
+            <div class="flex items-center justify-between mb-2">
+                <h3 class="font-semibold text-stone-800">Logs</h3>
+                <span class="text-stone-500 text-sm">0 entries</span>
+            </div>
+            <div id="backend-logs-list" class="text-center py-4 text-stone-400 text-sm">No logs available</div>
+        </div>
+    </div>
+</div>
+
+<!-- DATABASE MODAL -->
+<div id="modal-database" class="modal-panel hidden fixed inset-x-4 top-16 bottom-4 z-[70] bg-white rounded-3xl shadow-2xl flex flex-col overflow-hidden max-w-lg mx-auto">
+    <div class="flex items-center justify-between px-5 py-4 border-b border-stone-100 shrink-0">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 bg-purple-100 rounded-xl flex items-center justify-center">
+                <svg class="w-4 h-4 text-purple-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.657-4.03 3-9 3S3 13.657 3 12M21 19c0 1.657-4.03 3-9 3S3 20.657 3 19M21 5v14M3 5v14"/></svg>
+            </div>
+            <h2 class="font-bold text-stone-900">Database Viewer</h2>
+        </div>
+        <div class="flex items-center gap-2">
+            <span id="db-status-badge" class="text-xs border rounded-full px-3 py-1 border-stone-200 text-stone-500 bg-stone-50">● Idle</span>
+            <button onclick="closeModal()" class="p-1.5 hover:bg-stone-100 rounded-lg cursor-pointer">
+                <svg class="w-4 h-4 text-stone-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+        </div>
+    </div>
+    <div class="flex-1 overflow-y-auto p-4 space-y-3">
+
+        <!-- Connection status -->
+        <div class="bg-stone-50 rounded-2xl p-4">
+            <h3 class="font-bold text-stone-900 mb-2 text-sm">Backend Connection</h3>
+            <p id="db-env-status" class="text-stone-500 text-xs mb-3">Connecting...</p>
+            <div class="space-y-1">
+                <p id="d1-status"  class="text-xs text-stone-400 font-mono">· SOVEREIGN_DB (D1) — loading...</p>
+                <p id="kv-status"  class="text-xs text-stone-400 font-mono">· SOVEREIGN_KV — loading...</p>
+                <p id="r2-status"  class="text-xs text-stone-400 font-mono">· LOBES_VAULT (R2) — loading...</p>
+            </div>
+        </div>
+
+        <!-- Tables — starts open -->
+        <div class="bg-stone-50 rounded-2xl p-4">
+            <button onclick="toggleSection('tables-section', this)" class="w-full flex items-center justify-between cursor-pointer mb-2">
+                <div class="flex items-center gap-2">
+                    <svg class="w-4 h-4 text-stone-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 10h18M3 14h18M10 4v16M6 4h12a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2z"/></svg>
+                    <h3 class="font-bold text-stone-900 text-sm">D1 Tables</h3>
+                </div>
+                <svg class="w-4 h-4 text-stone-400 transition-transform" style="transform:rotate(180deg)" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+            </button>
+            <div id="tables-section">
+                <table class="w-full text-xs">
+                    <thead><tr class="text-left text-stone-400 text-[10px] uppercase"><th class="pb-1.5 pr-2">Table</th><th class="pb-1.5 pr-2 text-right">Rows</th><th class="pb-1.5">Type</th></tr></thead>
+                    <tbody id="db-tables-body">
+                        <tr><td colspan="3" class="text-center py-3 text-stone-400">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- SQL Query -->
+        <div class="bg-stone-50 rounded-2xl p-4">
+            <h3 class="font-bold text-stone-900 mb-2 text-sm">SQL Query</h3>
+            <textarea id="db-query-input" rows="2" placeholder="SELECT * FROM chats LIMIT 10" class="w-full bg-white border border-stone-200 rounded-xl px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-purple-400 resize-none"></textarea>
+            <button onclick="runDBQuery()" class="mt-2 w-full flex items-center justify-center gap-2 bg-stone-900 text-white rounded-xl py-2 text-xs font-semibold hover:bg-stone-800 cursor-pointer">
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 010 1.972l-11.54 6.347a1.125 1.125 0 01-1.667-.986V5.653z"/></svg>
+                Run Query (SELECT only)
+            </button>
+            <pre id="db-query-output" class="mt-2 bg-stone-950 text-emerald-400 text-[10px] rounded-xl p-3 overflow-x-auto max-h-40 font-mono whitespace-pre-wrap hidden"></pre>
+        </div>
+
+        <!-- R2 Storage -->
+        <div class="bg-stone-50 rounded-2xl p-4">
+            <h3 class="font-bold text-stone-900 mb-2 text-sm">R2 Storage Upload</h3>
+            <div id="storage-drop-zone" class="drop-zone rounded-2xl p-6 text-center cursor-pointer transition-colors" onclick="document.getElementById('storage-file-input').click()" ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)" ondrop="handleDrop(event)">
+                <input type="file" id="storage-file-input" multiple class="hidden" onchange="handleFileSelect(event)">
+                <svg class="w-6 h-6 text-stone-300 mx-auto mb-2" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/></svg>
+                <p class="text-stone-500 text-xs">Drop files or click to upload to LOBES_VAULT (R2)</p>
+            </div>
+            <p id="storage-status" class="text-stone-400 text-xs mt-2">No files uploaded yet</p>
+        </div>
+
+        <!-- Secrets -->
+        <div class="bg-stone-50 rounded-2xl p-4">
+            <h3 class="font-bold text-stone-900 mb-2 text-sm">Secrets Vault</h3>
+            <div class="flex gap-2 mb-2">
+                <input type="text" id="secret-key" placeholder="Key (e.g. GITHUB_PAT)" class="flex-1 bg-white border border-stone-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-purple-400">
+                <input type="password" id="secret-value" placeholder="Value" class="flex-1 bg-white border border-stone-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-purple-400">
+            </div>
+            <button onclick="saveSecret()" class="w-full bg-stone-900 text-white rounded-xl py-2 text-xs font-semibold hover:bg-stone-800 cursor-pointer">Save to KV + D1</button>
+        </div>
+
+    </div>
+</div>
+
+<!-- GITHUB MODAL -->
+<div id="modal-github" class="modal-panel hidden fixed inset-x-4 top-16 bottom-4 z-[70] bg-white rounded-3xl shadow-2xl flex flex-col overflow-hidden max-w-lg mx-auto">
+    <div class="flex items-center justify-between px-5 py-4 border-b border-stone-100 shrink-0">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 bg-stone-900 rounded-xl flex items-center justify-center">
+                <svg class="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.373 0 12c0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 21.795 24 17.298 24 12c0-6.627-5.373-12-12-12"/></svg>
+            </div>
+            <h2 class="font-bold text-stone-900">GitHub</h2>
+        </div>
+        <div class="flex items-center gap-2">
+            <button onclick="refreshGitHub()" class="p-1.5 hover:bg-stone-100 rounded-lg cursor-pointer">
+                <svg class="w-4 h-4 text-stone-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/></svg>
+            </button>
+            <button class="text-xs text-stone-500 hover:text-stone-700 border border-stone-200 rounded-lg px-3 py-1.5">? Guide</button>
+            <button onclick="closeModal()" class="p-1.5 hover:bg-stone-100 rounded-lg cursor-pointer">
+                <svg class="w-4 h-4 text-stone-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+        </div>
+    </div>
+    <div class="flex-1 overflow-y-auto p-4">
+        <h3 class="font-bold text-stone-900 mb-4">Connect to GitHub</h3>
+        <div class="flex bg-stone-100 rounded-2xl p-1 mb-4">
+            <button id="gh-create-btn" onclick="switchGHTab('create')" class="flex-1 py-2 text-sm font-medium rounded-xl bg-stone-900 text-white transition-all cursor-pointer">Create New</button>
+            <button id="gh-existing-btn" onclick="switchGHTab('existing')" class="flex-1 py-2 text-sm font-medium rounded-xl text-stone-600 transition-all cursor-pointer">Use Existing</button>
+        </div>
+        <div id="gh-create-form">
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-stone-700 mb-1.5">Repository Name</label>
+                <input type="text" id="gh-repo-name" placeholder="my-awesome-project" class="w-full bg-stone-50 border border-stone-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors">
+                <p class="text-stone-400 text-xs mt-1.5">Leave empty to use your project name.</p>
+            </div>
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-stone-700 mb-1.5">GitHub Token</label>
+                <input type="password" id="gh-token-input" placeholder="ghp_xxxxxxxxxxxx" class="w-full bg-stone-50 border border-stone-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors">
+            </div>
+            <div class="mb-6">
+                <label class="block text-sm font-medium text-stone-700 mb-2">Visibility</label>
+                <div class="grid grid-cols-2 gap-3">
+                    <button id="vis-private" onclick="selectVisibility('private')" class="flex flex-col items-center gap-2 p-4 rounded-2xl border-2 border-blue-500 bg-blue-50 transition-all cursor-pointer">
+                        <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/></svg>
+                        <span class="text-sm font-semibold text-blue-700">Private</span>
+                    </button>
+                    <button id="vis-public" onclick="selectVisibility('public')" class="flex flex-col items-center gap-2 p-4 rounded-2xl border-2 border-stone-200 bg-stone-50 transition-all cursor-pointer">
+                        <svg class="w-6 h-6 text-stone-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10zM2 12h20"/></svg>
+                        <span class="text-sm font-semibold text-stone-500">Public</span>
+                    </button>
+                </div>
+                <p id="vis-desc" class="text-xs text-stone-400 mt-2">Only you can see this repository.</p>
+            </div>
+            <button onclick="createAndPush()" class="w-full flex items-center justify-center gap-2 bg-stone-900 hover:bg-stone-800 text-white font-semibold rounded-2xl py-3.5 transition-colors cursor-pointer">
+                <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.373 0 12c0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 21.795 24 17.298 24 12c0-6.627-5.373-12-12-12"/></svg>
+                Create &amp; Push
+            </button>
+            <button onclick="disconnectGitHub()" class="w-full mt-3 py-3 border border-stone-200 rounded-2xl text-sm text-stone-600 hover:bg-stone-50 transition-colors cursor-pointer">Disconnect GitHub</button>
+        </div>
+        <div id="gh-existing-form" class="hidden">
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-stone-700 mb-1.5">Repository URL</label>
+                <input type="text" id="gh-clone-url" placeholder="https://github.com/your-org/your-repo" class="w-full bg-stone-50 border border-stone-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white">
+            </div>
+            <button onclick="cloneExistingRepo()" class="w-full bg-stone-900 hover:bg-stone-800 text-white font-semibold rounded-2xl py-3.5 transition-colors cursor-pointer">Connect Repository</button>
+        </div>
+    </div>
+</div>
+
+<!-- PERMISSIONS MODAL -->
+<div id="modal-permissions" class="modal-panel hidden fixed inset-x-4 top-16 bottom-4 z-[70] bg-white rounded-3xl shadow-2xl flex flex-col overflow-hidden max-w-lg mx-auto">
+    <div class="flex items-center justify-between px-5 py-4 border-b border-stone-100 shrink-0">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 bg-blue-100 rounded-xl flex items-center justify-center">
+                <svg class="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/></svg>
+            </div>
+            <h2 class="font-bold text-stone-900">Permissions</h2>
+        </div>
+        <div class="flex items-center gap-2">
+            <button class="text-xs text-stone-500 hover:text-stone-700 border border-stone-200 rounded-lg px-3 py-1.5">? Guide</button>
+            <button onclick="closeModal()" class="p-1.5 hover:bg-stone-100 rounded-lg cursor-pointer">
+                <svg class="w-4 h-4 text-stone-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+        </div>
+    </div>
+    <div class="flex-1 overflow-y-auto p-4 space-y-4">
+        <div class="bg-stone-50 rounded-2xl p-4">
+            <h3 class="font-bold text-stone-900 mb-1">Project Visibility</h3>
+            <div class="flex items-center justify-between mt-3">
+                <p class="text-stone-600 text-sm">Everyone can view this project</p>
+                <div class="flex bg-stone-200 rounded-full p-0.5">
+                    <button id="perm-private" onclick="setProjectVisibility('private')" class="px-4 py-1.5 rounded-full text-xs font-semibold text-stone-600 transition-all hover:bg-white/60 cursor-pointer">Private</button>
+                    <button id="perm-public" onclick="setProjectVisibility('public')" class="px-4 py-1.5 rounded-full text-xs font-semibold bg-white text-stone-900 shadow-sm transition-all cursor-pointer">Public</button>
+                </div>
+            </div>
+        </div>
+        <div class="bg-stone-50 rounded-2xl p-4">
+            <div class="flex items-center gap-2 mb-3">
+                <svg class="w-4 h-4 text-stone-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"/></svg>
+                <h3 class="font-bold text-stone-900">Invited Users</h3>
+            </div>
+            <div class="flex gap-2">
+                <input id="invite-email" type="email" placeholder="Add new user (email address)" class="flex-1 bg-white border border-stone-200 rounded-2xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <button onclick="addInvitedUser()" class="bg-stone-200 hover:bg-stone-300 text-stone-700 font-semibold rounded-2xl px-4 py-2.5 text-sm transition-colors cursor-pointer">+ Add</button>
+            </div>
+            <div id="invited-users-list" class="mt-3 space-y-2"></div>
+        </div>
+    </div>
+</div>
+
+<!-- SETTINGS MODAL -->
+<div id="modal-settings" class="modal-panel hidden fixed inset-x-4 top-16 bottom-4 z-[70] bg-white rounded-3xl shadow-2xl flex flex-col overflow-hidden max-w-lg mx-auto">
+    <div class="flex items-center justify-between px-5 py-4 border-b border-stone-100 shrink-0">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 bg-stone-100 rounded-xl flex items-center justify-center">
+                <svg class="w-4 h-4 text-stone-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="3"/></svg>
+            </div>
+            <h2 class="font-bold text-stone-900">Settings</h2>
+        </div>
+        <button onclick="closeModal()" class="p-1.5 hover:bg-stone-100 rounded-lg cursor-pointer">
+            <svg class="w-4 h-4 text-stone-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+    </div>
+    <div class="flex-1 overflow-y-auto p-4 space-y-3">
+        <div class="bg-stone-50 rounded-2xl p-4 space-y-3">
+            <div class="flex items-center justify-between">
+                <div><p class="font-medium text-stone-800 text-sm">Project Name</p><p class="text-stone-400 text-xs">Sovereign Coding Agent</p></div>
+                <button class="text-xs text-blue-600 hover:text-blue-700 font-medium cursor-pointer">Edit</button>
+            </div>
+            <hr class="border-stone-200">
+            <div class="flex items-center justify-between">
+                <div><p class="font-medium text-stone-800 text-sm">AI Model</p><p class="text-stone-400 text-xs">Llama 3.3 70B (Workers AI)</p></div>
+                <span class="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">Active</span>
+            </div>
+            <hr class="border-stone-200">
+            <div class="flex items-center justify-between">
+                <div><p class="font-medium text-stone-800 text-sm">Region</p><p class="text-stone-400 text-xs">Cloudflare Edge (Global)</p></div>
+                <span class="text-xs text-stone-500">Auto</span>
+            </div>
+        </div>
+        <div class="bg-red-50 rounded-2xl p-4">
+            <p class="font-medium text-red-700 text-sm mb-1">Danger Zone</p>
+            <p class="text-red-500 text-xs mb-3">These actions are irreversible.</p>
+            <button class="w-full py-2 border border-red-200 rounded-xl text-sm text-red-600 hover:bg-red-100 transition-colors cursor-pointer">Delete Project</button>
+        </div>
+    </div>
+</div>
+
+<!-- DEPLOY MODAL -->
+<div id="modal-deploy" class="modal-panel hidden fixed inset-x-4 top-16 bottom-4 z-[70] bg-white rounded-3xl shadow-2xl flex flex-col overflow-hidden max-w-lg mx-auto">
+    <div class="flex items-center justify-between px-5 py-4 border-b border-stone-100 shrink-0">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 bg-amber-100 rounded-xl flex items-center justify-center">
+                <svg class="w-4 h-4 text-amber-600" fill="currentColor" viewBox="0 0 24 24"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+            </div>
+            <h2 class="font-bold text-stone-900">Deploy</h2>
+        </div>
+        <button onclick="closeModal()" class="p-1.5 hover:bg-stone-100 rounded-lg cursor-pointer">
+            <svg class="w-4 h-4 text-stone-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+    </div>
+    <div class="flex-1 overflow-y-auto p-4 space-y-3">
+        <div class="bg-stone-50 rounded-2xl p-4 space-y-3">
+            <div class="flex items-center justify-between">
+                <div><p class="font-semibold text-stone-800">Cloudflare Pages</p><p class="text-stone-400 text-xs">sovereign-agent.pages.dev</p></div>
+                <a href="https://sovereign-agent.pages.dev" target="_blank" class="text-xs text-blue-600 hover:underline">Visit →</a>
+            </div>
+            <hr class="border-stone-200">
+            <div class="flex items-center justify-between">
+                <div><p class="font-semibold text-stone-800">Cloudflare Worker API</p><p class="text-stone-400 text-xs">sovereign-agent-api.workers.dev</p></div>
+                <a href="https://sovereign-agent-api.workers.dev/api/health" target="_blank" class="text-xs text-blue-600 hover:underline">Health →</a>
+            </div>
+        </div>
+        <button onclick="triggerDeploy()" class="w-full flex items-center justify-center gap-2 bg-stone-900 hover:bg-stone-800 text-white font-semibold rounded-2xl py-3.5 transition-colors cursor-pointer">
+            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+            Deploy Now
+        </button>
+        <div id="deploy-status" class="hidden bg-emerald-50 rounded-2xl p-3 text-center text-emerald-700 text-sm font-medium">
+            ✓ Deployment triggered via GitHub Actions
+        </div>
+    </div>
+</div>
+
+<!-- SUPABASE MODAL -->
+<div id="modal-supabase" class="modal-panel hidden fixed inset-x-4 top-16 bottom-4 z-[70] bg-white rounded-3xl shadow-2xl flex flex-col overflow-hidden max-w-lg mx-auto">
+    <div class="flex items-center justify-between px-5 py-4 border-b border-stone-100 shrink-0">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 bg-emerald-100 rounded-xl flex items-center justify-center">
+                <svg class="w-4 h-4 text-emerald-600" fill="currentColor" viewBox="0 0 24 24"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+            </div>
+            <h2 class="font-bold text-stone-900">Supabase</h2>
+        </div>
+        <button onclick="closeModal()" class="p-1.5 hover:bg-stone-100 rounded-lg cursor-pointer">
+            <svg class="w-4 h-4 text-stone-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+    </div>
+    <div class="flex-1 overflow-y-auto p-4 space-y-3">
+        <div class="bg-stone-50 rounded-2xl p-4">
+            <p class="font-semibold text-stone-800 mb-1">Connect Supabase Project</p>
+            <p class="text-stone-400 text-sm mb-4">Link your Supabase project to use Postgres, Auth, Storage, and Edge Functions.</p>
+            <div class="space-y-3" id="supabase-form">
+                <input type="text" id="supabase-url" placeholder="Project URL (https://xxx.supabase.co)" class="w-full bg-white border border-stone-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                <input type="password" id="supabase-key" placeholder="Anon / Service Role Key" class="w-full bg-white border border-stone-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                <button onclick="connectSupabase()" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-2xl py-3 transition-colors cursor-pointer">Connect Supabase</button>
+            </div>
+            <p id="supabase-status" class="text-sm mt-2 text-stone-400"></p>
+        </div>
+    </div>
+</div>
+
+<!-- NOTIFICATIONS MODAL -->
+<div id="modal-notifications" class="modal-panel hidden fixed inset-x-4 top-16 bottom-4 z-[70] bg-white rounded-3xl shadow-2xl flex flex-col overflow-hidden max-w-lg mx-auto">
+    <div class="flex items-center justify-between px-5 py-4 border-b border-stone-100 shrink-0">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 bg-blue-100 rounded-xl flex items-center justify-center">
+                <svg class="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0"/></svg>
+            </div>
+            <h2 class="font-bold text-stone-900">Notifications</h2>
+        </div>
+        <button onclick="closeModal()" class="p-1.5 hover:bg-stone-100 rounded-lg cursor-pointer">
+            <svg class="w-4 h-4 text-stone-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+    </div>
+    <div id="notifications-list" class="flex-1 overflow-y-auto p-4">
+        <div class="text-center py-12 text-stone-400">
+            <svg class="w-12 h-12 mx-auto mb-3 opacity-40" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0"/></svg>
+            <p class="font-medium">No notifications yet</p>
+            <p class="text-xs mt-1">Deploy events and alerts will appear here.</p>
+        </div>
+    </div>
+</div>
+
+<!-- SCREENSHOTS MODAL -->
+<div id="modal-screenshots" class="modal-panel hidden fixed inset-x-4 top-16 bottom-4 z-[70] bg-white rounded-3xl shadow-2xl flex flex-col overflow-hidden max-w-lg mx-auto">
+    <div class="flex items-center justify-between px-5 py-4 border-b border-stone-100 shrink-0">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 bg-stone-100 rounded-xl flex items-center justify-center">
+                <svg class="w-4 h-4 text-stone-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.192 2.192 0 00-1.736-1.039 48.774 48.774 0 00-5.232 0 2.192 2.192 0 00-1.736 1.039l-.821 1.316z"/><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 12.75a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0z"/></svg>
+            </div>
+            <h2 class="font-bold text-stone-900">Screenshots</h2>
+        </div>
+        <button onclick="closeModal()" class="p-1.5 hover:bg-stone-100 rounded-lg cursor-pointer">
+            <svg class="w-4 h-4 text-stone-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+    </div>
+    <div id="screenshots-grid" class="flex-1 overflow-y-auto p-4 grid grid-cols-2 gap-3 content-start">
+        <div class="col-span-2 text-center py-12 text-stone-400">
+            <svg class="w-12 h-12 mx-auto mb-3 opacity-40" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.192 2.192 0 00-1.736-1.039 48.774 48.774 0 00-5.232 0 2.192 2.192 0 00-1.736 1.039l-.821 1.316z"/><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 12.75a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0z"/></svg>
+            <p class="font-medium">No screenshots yet</p>
+            <p class="text-xs mt-1">Captured previews will appear here.</p>
+            <button onclick="captureScreenshot()" class="mt-4 px-6 py-2.5 bg-stone-900 text-white text-sm rounded-2xl hover:bg-stone-800 transition-colors cursor-pointer">Capture Screenshot</button>
+        </div>
+    </div>
+</div>
+
+<!-- DUPLICATE MODAL -->
+<div id="modal-duplicate" class="modal-panel hidden fixed inset-x-4 top-16 bottom-4 z-[70] bg-white rounded-3xl shadow-2xl flex flex-col overflow-hidden max-w-lg mx-auto">
+    <div class="flex items-center justify-between px-5 py-4 border-b border-stone-100 shrink-0">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 bg-stone-100 rounded-xl flex items-center justify-center">
+                <svg class="w-4 h-4 text-stone-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 00-3.375-3.375h-1.5a1.125 1.125 0 01-1.125-1.125v-1.5a3.375 3.375 0 00-3.375-3.375H9.75"/></svg>
+            </div>
+            <h2 class="font-bold text-stone-900">Duplicate Project</h2>
+        </div>
+        <button onclick="closeModal()" class="p-1.5 hover:bg-stone-100 rounded-lg cursor-pointer">
+            <svg class="w-4 h-4 text-stone-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+    </div>
+    <div class="flex-1 overflow-y-auto p-4">
+        <div class="bg-stone-50 rounded-2xl p-4 mb-4">
+            <p class="text-stone-700 text-sm mb-3">Create an exact copy of this project including all files, settings, and configurations.</p>
+            <div class="mb-3">
+                <label class="block text-xs font-medium text-stone-600 mb-1.5">New Project Name</label>
+                <input type="text" placeholder="Sovereign Agent (Copy)" class="w-full bg-white border border-stone-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            </div>
+        </div>
+        <button class="w-full bg-stone-900 hover:bg-stone-800 text-white font-semibold rounded-2xl py-3.5 transition-colors cursor-pointer">Duplicate Project</button>
+    </div>
+</div>
+
+<!-- ═══ MAIN APP SHELL ══════════════════════════════════════ -->
+<div id="app-shell" class="max-w-2xl mx-auto w-full px-3 pt-2">
+
+    <!-- ── Header ─── -->
+    <header class="flex items-center justify-between py-2 shrink-0">
+        <div class="flex items-center gap-3">
+            <button onclick="openSidebar()" class="p-2 hover:bg-white/60 rounded-full transition-colors cursor-pointer">
+                <svg class="w-5 h-5 text-stone-700" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
+            </button>
+            <div class="flex items-center gap-1 cursor-pointer hover:bg-white/40 px-2 py-1 rounded-xl">
+                <div class="w-5 h-5 bg-amber-500 rounded-md flex items-center justify-center">
+                    <svg class="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                </div>
+                <span class="font-semibold text-stone-800 text-sm">Sovereign Agent</span>
+                <svg class="w-3.5 h-3.5 text-stone-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+            </div>
+        </div>
+        <button class="text-xs font-semibold bg-stone-900 text-white px-4 py-2 rounded-full hover:bg-stone-800 transition-colors flex items-center gap-1.5 cursor-pointer">
+            <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+            Upgrade
+        </button>
+    </header>
+
+    <!-- ── Tab Nav ─── -->
+    <div class="w-full flex justify-center mb-3 shrink-0" style="position:relative;z-index:20">
+        <div class="bg-white/90 backdrop-blur-md p-1 rounded-full border border-stone-200/80 shadow-sm flex items-center gap-1 relative">
+            <button id="tab-chat" onclick="switchView('chat')" class="flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-medium transition-all cursor-pointer tab-active">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
+                <span>Chat</span>
+            </button>
+            <button id="tab-preview" onclick="switchView('preview')" class="flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-medium transition-all cursor-pointer text-stone-600 hover:text-stone-900 hover:bg-stone-50">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+                <span>Preview</span>
+            </button>
+            <!-- More dropdown — overflow:visible so dropdown isn't clipped -->
+            <div class="relative" style="overflow:visible">
+                <button id="tab-more-trigger" onclick="toggleDropdown(event)" class="flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-medium text-stone-600 hover:bg-stone-50 transition-colors cursor-pointer">
+                    <span id="more-pill-label">More</span>
+                    <svg class="w-3 h-3 text-stone-400 transition-transform duration-200" id="dropdown-arrow" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+                </button>
+                <div id="more-dropdown" class="hidden absolute top-full right-0 mt-2 w-56 bg-white border border-stone-100 shadow-2xl rounded-2xl py-1.5" style="z-index:9999;max-height:80vh;overflow-y:auto">
+                    <button onclick="switchView('code');closeDropdown();" class="w-full flex items-center gap-3 px-4 py-2.5 text-sm font-medium text-stone-700 hover:bg-stone-50 text-left cursor-pointer">
+                        <svg class="w-4 h-4 text-stone-500 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>&lt;/&gt; Code
+                    </button>
+                    <button onclick="openModal('deploy');closeDropdown();" class="w-full flex items-center gap-3 px-4 py-2.5 text-sm font-medium text-stone-700 hover:bg-stone-50 text-left cursor-pointer">
+                        <svg class="w-4 h-4 text-stone-500 shrink-0" fill="currentColor" viewBox="0 0 24 24"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>Deploy
+                    </button>
+                    <button onclick="openModal('logs');closeDropdown();" class="w-full flex items-center gap-3 px-4 py-2.5 text-sm font-medium text-stone-700 hover:bg-stone-50 text-left cursor-pointer">
+                        <svg class="w-4 h-4 text-stone-500 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>Logs
+                    </button>
+                    <button onclick="openModal('github');closeDropdown();" class="w-full flex items-center gap-3 px-4 py-2.5 text-sm font-medium text-stone-700 hover:bg-stone-50 text-left cursor-pointer">
+                        <svg class="w-4 h-4 text-stone-500 shrink-0" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.373 0 12c0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 21.795 24 17.298 24 12c0-6.627-5.373-12-12-12"/></svg>GitHub
+                    </button>
+                    <button onclick="openModal('permissions');closeDropdown();" class="w-full flex items-center gap-3 px-4 py-2.5 text-sm font-medium text-stone-700 hover:bg-stone-50 text-left cursor-pointer">
+                        <svg class="w-4 h-4 text-stone-500 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/></svg>Permissions
+                    </button>
+                    <button onclick="openModal('settings');closeDropdown();" class="w-full flex items-center gap-3 px-4 py-2.5 text-sm font-medium text-stone-700 hover:bg-stone-50 text-left cursor-pointer">
+                        <svg class="w-4 h-4 text-stone-500 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="3"/></svg>Settings
+                    </button>
+                    <button onclick="openModal('supabase');closeDropdown();" class="w-full flex items-center gap-3 px-4 py-2.5 text-sm font-medium text-stone-700 hover:bg-stone-50 text-left cursor-pointer">
+                        <svg class="w-4 h-4 text-emerald-500 shrink-0" fill="currentColor" viewBox="0 0 24 24"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>Supabase
+                    </button>
+                    <button onclick="openModal('notifications');closeDropdown();" class="w-full flex items-center gap-3 px-4 py-2.5 text-sm font-medium text-stone-700 hover:bg-stone-50 text-left cursor-pointer">
+                        <svg class="w-4 h-4 text-stone-500 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0"/></svg>Notifications
+                    </button>
+                    <button onclick="openModal('screenshots');closeDropdown();" class="w-full flex items-center gap-3 px-4 py-2.5 text-sm font-medium text-stone-700 hover:bg-stone-50 text-left cursor-pointer">
+                        <svg class="w-4 h-4 text-stone-500 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.192 2.192 0 00-1.736-1.039 48.774 48.774 0 00-5.232 0 2.192 2.192 0 00-1.736 1.039l-.821 1.316z"/><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 12.75a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0z"/></svg>Screenshots
+                    </button>
+                    <hr class="border-stone-100 my-1 mx-3">
+                    <button onclick="openModal('duplicate');closeDropdown();" class="w-full flex items-center gap-3 px-4 py-2.5 text-sm font-medium text-stone-700 hover:bg-stone-50 text-left cursor-pointer">
+                        <svg class="w-4 h-4 text-stone-500 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 00-3.375-3.375h-1.5a1.125 1.125 0 01-1.125-1.125v-1.5a3.375 3.375 0 00-3.375-3.375H9.75"/></svg>Duplicate Project
+                    </button>
+                    <button onclick="downloadZip();closeDropdown();" class="w-full flex items-center gap-3 px-4 py-2.5 text-sm font-medium text-stone-700 hover:bg-stone-50 text-left cursor-pointer">
+                        <svg class="w-4 h-4 text-stone-500 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>Download ZIP
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══ VIEWS CONTAINER ══════════════════════════════════ -->
+    <div id="views-container">
+
+        <!-- ── CHAT VIEW ── -->
+        <div id="view-chat" class="active">
+
+            <!-- Scrollable messages area — grows, shrinks, scrolls -->
+            <div id="chat-scroll-area" class="px-2">
+                <div id="chat-hero" class="flex flex-col items-center justify-center text-center py-10">
+                    <h1 class="text-3xl font-light tracking-tight text-stone-800 leading-snug">
+                        Welcome back, CEO.<br>
+                        <span class="text-stone-500 text-2xl">Systems are ready for your</span><br>
+                        <span class="font-semibold text-stone-900">Trinity Universe build.</span>
+                    </h1>
+                </div>
+
+                <!-- Agent Steps Accordion -->
+                <div id="agent-steps-accordion-root" class="w-full max-w-2xl mx-auto mb-3 hidden">
+                    <div class="bg-white/90 backdrop-blur-md border border-stone-200 rounded-2xl overflow-hidden shadow-sm">
+                        <button id="accordion-trigger" class="w-full flex items-center justify-between p-4 text-left hover:bg-stone-50/50 transition-all focus:outline-none cursor-pointer">
+                            <div class="flex items-center gap-3">
+                                <span class="relative flex h-2.5 w-2.5">
+                                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                                    <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-amber-500"></span>
+                                </span>
+                                <span id="accordion-title-text" class="text-sm font-semibold text-stone-800">Agent executing...</span>
+                            </div>
+                            <svg id="accordion-arrow" class="w-4 h-4 text-stone-400 transition-transform duration-200 rotate-180" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+                        </button>
+                        <!-- Starts open (no 'hidden') — toggle will close it -->
+                        <div id="accordion-content" class="border-t border-stone-100 p-4 bg-white/50">
+                            <div id="accordion-steps-timeline" class="relative border-l border-stone-200 ml-1 pl-4 space-y-3 text-xs text-left"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Chat messages -->
+                <div id="chat-messages-container" class="w-full max-w-2xl space-y-4 text-left pb-3"></div>
+            </div>
+
+            <!-- Input bar — always pinned at bottom, never clipped -->
+            <div id="chat-footer">
+                <div class="w-full bg-white rounded-[24px] shadow-md border border-stone-200/80 flex items-end p-3 gap-2" style="min-height:52px">
+                    <button class="p-1.5 hover:bg-stone-100 rounded-full text-stone-500 cursor-pointer shrink-0" title="Attach">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+                    </button>
+                    <textarea
+                        id="chat-input"
+                        rows="1"
+                        placeholder="Command the Titan-Lobe..."
+                        autocomplete="off"
+                        autocorrect="off"
+                        autocapitalize="sentences"
+                        spellcheck="true"
+                        class="flex-1 outline-none border-none text-stone-800 placeholder-stone-400 bg-transparent text-sm focus:ring-0 leading-snug"
+                    ></textarea>
+                    <button onclick="sendMessage()" class="p-2 bg-stone-900 hover:bg-stone-800 rounded-full text-white cursor-pointer transition-colors shrink-0" style="align-self:flex-end">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5"/></svg>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── PREVIEW VIEW ── -->
+        <div id="view-preview" class="hidden">
+            <div class="flex justify-center mb-3 shrink-0">
+                <div class="bg-stone-200/80 p-0.5 rounded-full flex items-center gap-0.5">
+                    <button id="prev-web" onclick="switchPreview('web')" class="px-4 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer bg-white text-stone-800 shadow-sm">Web</button>
+                    <button id="prev-ios" onclick="switchPreview('ios')" class="px-4 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer text-stone-500">iOS</button>
+                    <button id="prev-android" onclick="switchPreview('android')" class="px-4 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer text-stone-500">Android</button>
+                    <button id="prev-expo" onclick="switchPreview('expo')" class="px-4 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer text-stone-500">Expo</button>
+                </div>
+            </div>
+            <div id="prev-panel-web" class="flex-1 flex flex-col min-h-0">
+                <div class="flex-1 w-full bg-white rounded-2xl shadow-md border border-stone-200 flex flex-col overflow-hidden mb-2">
+                    <div class="bg-stone-100 border-b border-stone-200 px-3 py-2 flex items-center gap-2 shrink-0">
+                        <div class="flex gap-1"><div class="w-2.5 h-2.5 rounded-full bg-red-400"></div><div class="w-2.5 h-2.5 rounded-full bg-amber-400"></div><div class="w-2.5 h-2.5 rounded-full bg-emerald-400"></div></div>
+                        <div class="flex-1 bg-white rounded px-2 py-0.5 text-xs text-stone-500 border border-stone-200 font-mono truncate">https://sovereign-agent.pages.dev</div>
+                        <button onclick="document.getElementById('web-preview-iframe').src=document.getElementById('web-preview-iframe').src" class="p-1 hover:bg-stone-200 rounded cursor-pointer">
+                            <svg class="w-3 h-3 text-stone-500" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/></svg>
+                        </button>
+                    </div>
+                    <iframe id="web-preview-iframe" src="https://sovereign-agent.pages.dev" class="flex-1 w-full border-0" sandbox="allow-scripts allow-same-origin allow-forms" title="Live preview"></iframe>
+                </div>
+            </div>
+            <div id="prev-panel-ios" class="hidden flex-1 flex flex-col items-center justify-center">
+                <div class="bg-stone-900 rounded-[40px] p-3 shadow-2xl" style="width:220px">
+                    <div class="bg-stone-800 rounded-t-3xl px-4 pt-2 pb-1 flex justify-between items-center">
+                        <span class="text-white text-[9px] font-semibold">9:41</span>
+                        <div class="w-14 h-3.5 bg-stone-700 rounded-full"></div>
+                        <div class="flex gap-0.5 items-center"><svg class="w-2.5 h-2.5 text-white" fill="currentColor" viewBox="0 0 24 10"><path d="M1.5 8.5a13 13 0 0121 0M5.5 12.5a8 8 0 0113 0M9.5 16.5a4 4 0 015 0M12 20h.01"/></svg></div>
+                    </div>
+                    <div class="bg-stone-50 rounded-b-3xl" style="height:360px">
+                        <div class="bg-white border-b border-stone-200 px-3 py-2.5"><p class="font-semibold text-stone-900 text-xs">Sovereign Agent</p></div>
+                        <div class="flex flex-col items-center justify-center h-64">
+                            <div class="w-10 h-10 bg-amber-100 rounded-2xl flex items-center justify-center mb-2"><span class="text-xl">⚡</span></div>
+                            <p class="text-xs font-medium text-stone-700">Hi, CEO.</p>
+                            <p class="text-[10px] text-stone-400 mt-0.5">iOS · iPhone 15 Pro</p>
+                        </div>
+                    </div>
+                </div>
+                <p class="text-xs text-stone-400 mt-3 font-mono">iPhone 15 Pro · iOS 17</p>
+            </div>
+            <div id="prev-panel-android" class="hidden flex-1 flex flex-col items-center justify-center">
+                <div class="bg-stone-900 rounded-[32px] p-2 shadow-2xl" style="width:210px">
+                    <div class="bg-stone-50 rounded-[26px] overflow-hidden" style="height:390px">
+                        <div class="bg-stone-900 px-4 py-2 flex justify-between items-center">
+                            <span class="text-white text-[9px]">12:00</span>
+                            <div class="flex gap-1 items-center"><svg class="w-2.5 h-2 text-white" fill="currentColor" viewBox="0 0 24 10"><rect x="0" y="1" width="20" height="8" rx="2" stroke="white" stroke-width="1.5" fill="none"/><rect x="1" y="2" width="14" height="6" rx="1.5" fill="white"/></svg></div>
+                        </div>
+                        <div class="flex flex-col items-center justify-center h-72 bg-white">
+                            <div class="w-10 h-10 bg-emerald-100 rounded-xl flex items-center justify-center mb-2"><span class="text-xl">🤖</span></div>
+                            <p class="text-xs font-medium text-stone-700">Hi, CEO.</p>
+                            <p class="text-[10px] text-stone-400 mt-0.5">Android · Pixel 8</p>
+                        </div>
+                        <div class="bg-stone-100 flex justify-around py-2 px-4">
+                            <div class="w-5 h-5 border-2 border-stone-400 rounded-full"></div>
+                            <div class="w-5 h-5 border-2 border-stone-400 rounded"></div>
+                            <div class="w-5 h-5 border-2 border-stone-400" style="clip-path:polygon(50% 0%,100% 100%,0% 100%)"></div>
+                        </div>
+                    </div>
+                </div>
+                <p class="text-xs text-stone-400 mt-3 font-mono">Pixel 8 · Android 14</p>
+            </div>
+            <div id="prev-panel-expo" class="hidden flex-1 flex flex-col items-center justify-center">
+                <div class="bg-white border border-stone-200 rounded-3xl p-8 text-center shadow-md max-w-xs w-full">
+                    <div class="w-14 h-14 bg-stone-900 rounded-2xl flex items-center justify-center mx-auto mb-3"><span class="text-2xl">📱</span></div>
+                    <p class="font-bold text-stone-800 mb-1">Expo Go Preview</p>
+                    <p class="text-stone-400 text-xs mb-4">Scan with Expo Go app to preview on your device</p>
+                    <div class="bg-stone-50 rounded-xl p-4 font-mono text-xs text-stone-600 text-left">exp://sovereign-agent.dev</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── CODE VIEW ── -->
+        <div id="view-code" class="hidden">
+            <div class="flex items-center gap-1 mb-2 bg-white/80 rounded-2xl p-1 border border-stone-200 shrink-0">
+                <button onclick="switchCodeTab('explorer')" id="code-tab-explorer" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-stone-100 text-stone-800 transition-all cursor-pointer">
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                    Explorer
+                </button>
+                <button onclick="switchCodeTab('search')" id="code-tab-search" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-stone-500 hover:text-stone-700 hover:bg-stone-50 transition-all cursor-pointer">
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"/></svg>
+                    Search
+                </button>
+                <button onclick="switchCodeTab('guide')" id="code-tab-guide" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-stone-500 hover:text-stone-700 hover:bg-stone-50 transition-all cursor-pointer">
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9 5.25h.008v.008H12v-.008z"/></svg>
+                    Guide
+                </button>
+                <div class="ml-auto">
+                    <span class="w-6 h-6 bg-amber-500 rounded-full flex items-center justify-center text-white text-[10px] font-bold">14</span>
+                </div>
+            </div>
+            <div id="code-panel-explorer" class="flex-1 min-h-0 flex gap-2">
+                <div class="w-48 shrink-0 bg-white rounded-2xl border border-stone-200 flex flex-col overflow-hidden">
+                    <div class="flex items-center justify-between px-3 py-2 border-b border-stone-100 shrink-0">
+                        <span class="text-xs font-bold text-stone-700">Explorer</span>
+                        <div class="flex gap-1">
+                            <button onclick="createNewNode('file')" class="p-1 hover:bg-stone-100 rounded text-stone-400 hover:text-stone-700 cursor-pointer" title="New File">
+                                <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+                            </button>
+                            <button onclick="createNewNode('folder')" class="p-1 hover:bg-stone-100 rounded text-stone-400 hover:text-stone-700 cursor-pointer" title="New Folder">
+                                <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 7a2 2 0 012-2h4l2 2h6a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div id="file-explorer-root" class="flex-1 overflow-y-auto p-1.5 space-y-0.5 text-xs"></div>
+                </div>
+                <div class="flex-1 min-w-0 bg-white rounded-2xl border border-stone-200 flex flex-col overflow-hidden">
+                    <div id="editor-canvas" class="flex-1 flex items-center justify-center text-stone-400 text-sm">
+                        <div class="text-center">
+                            <svg class="w-8 h-8 mx-auto mb-2 opacity-30" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>
+                            <p>Select a file to view</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div id="code-panel-search" class="hidden flex-1 min-h-0 bg-white rounded-2xl border border-stone-200 p-4">
+                <div class="flex gap-2 mb-4">
+                    <input type="text" id="code-search-input" placeholder="Search files..." class="flex-1 bg-stone-50 border border-stone-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <button onclick="searchFiles()" class="bg-stone-900 text-white rounded-xl px-3 py-2 text-sm hover:bg-stone-800 cursor-pointer">Search</button>
+                </div>
+                <div id="search-results" class="space-y-2 text-sm text-stone-400">Start typing to search...</div>
+            </div>
+            <div id="code-panel-guide" class="hidden flex-1 min-h-0 bg-white rounded-2xl border border-stone-200 p-4 overflow-y-auto">
+                <h3 class="font-bold text-stone-800 mb-3">Code Explorer Guide</h3>
+                <div class="space-y-3 text-sm text-stone-600">
+                    <div class="bg-stone-50 rounded-xl p-3"><p class="font-semibold text-stone-700 mb-1">File Structure</p><p>Your project follows a standard Expo/React Native layout with app/, components/, hooks/, and utils/ directories.</p></div>
+                    <div class="bg-stone-50 rounded-xl p-3"><p class="font-semibold text-stone-700 mb-1">API Endpoints</p><p>Backend runs on <code class="text-xs bg-stone-200 px-1 rounded">sovereign-agent-api.workers.dev</code> with /api/health, /api/agent/chat, and /api/agent/stream endpoints.</p></div>
+                    <div class="bg-stone-50 rounded-xl p-3"><p class="font-semibold text-stone-700 mb-1">Deployment</p><p>Push to main branch to trigger GitHub Actions deployment to Cloudflare Pages + Workers.</p></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
