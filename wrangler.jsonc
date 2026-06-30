@@ -1,0 +1,11 @@
+{
+  "name": "sovereign-agent-ui",
+  "compatibility_date": "2026-06-16",
+  "assets": {
+    "directory": "src"
+  },
+  "vars": {
+    "ENVIRONMENT": "production",
+    "WORKER_VERSION": "2.0.0"
+  }
+}
