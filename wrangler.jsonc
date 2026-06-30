@@ -1,11 +1,112 @@
 {
-  "name": "sovereign-agent-ui",
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "sovereign-agent",
   "compatibility_date": "2026-06-16",
+  "main": "src/worker.js",
   "assets": {
-    "directory": "src"
+    "directory": "dist"
+  },
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "invocation_logs": true
+    }
   },
   "vars": {
     "ENVIRONMENT": "production",
-    "WORKER_VERSION": "2.0.0"
-  }
+    "WORKER_VERSION": "2.0.0",
+    "PAGES_ORIGIN": "https://sovereign-agent.trinityceo717.workers.dev",
+    "CLOUDFLARE_ACCOUNT_ID": "1b77c2a9725b1e4c20f52f8ecfadbb3f"
+  },
+  "ai": {
+    "binding": "AI"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "SOVEREIGN_KV",
+      "id": "YOUR_KV_NAMESPACE_ID_HERE" 
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "SOVEREIGN_DB",
+      "database_name": "sovereign-db",
+      "database_id": "YOUR_D1_DATABASE_ID_HERE"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "LOBES_VAULT",
+      "bucket_name": "sovereign-master-bucket"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "LOBE_QUEUE",
+        "queue": "sovereign-lobe-queue"
+      }
+    ]
+  },
+  "dispatch_namespaces": [
+    {
+      "binding": "LOADER",
+      "namespace": "sovereign-dynamic-loader"
+    }
+  ],
+  "vectorize": [
+    {
+      "binding": "CODE_VECTOR_INDEX",
+      "index_name": "sovereign-vectorize-index"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "AGENT_SESSION",
+        "class_name": "AgentSession"
+      },
+      {
+        "name": "FILE_TOOLS_MCP",
+        "class_name": "FileToolsMcp"
+      },
+      {
+        "name": "GIT_TOOLS_MCP",
+        "class_name": "GitToolsMcp"
+      },
+      {
+        "name": "PROJECT_TOOLS",
+        "class_name": "ProjectTools"
+      },
+      {
+        "name": "RATE_LIMITER",
+        "class_name": "RateLimiter"
+      },
+      {
+        "name": "Sandbox",
+        "class_name": "Sandbox"
+      },
+      {
+        "name": "SELF_HEAL_MCP",
+        "class_name": "SelfHealMcp"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "AgentSession",
+        "FileToolsMcp",
+        "GitToolsMcp",
+        "ProjectTools",
+        "RateLimiter",
+        "Sandbox",
+        "SelfHealMcp"
+      ]
+    }
+  ]
 }
