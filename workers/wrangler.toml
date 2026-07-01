@@ -1,0 +1,9 @@
+name = "sovereign-agent-ui"
+main = "src/index.ts"
+compatibility_date = "2025-06-01"
+
+[ai]
+binding = "AI"
+
+[observability]
+enabled = true

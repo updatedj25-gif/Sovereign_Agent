@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cloudflare Agent Task Manager</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: monospace; background: #121212; color: #e0e0e0; padding: 20px; min-height: 100vh; }
+    #container { max-width: 800px; margin: 0 auto; }
+    h2 { color: #f6821f; margin-bottom: 16px; font-size: 1.3rem; letter-spacing: 0.5px; }
+    .status-bar { color: #f6821f; font-weight: bold; margin-bottom: 20px; padding: 8px 12px; background: #1a1a1a; border-left: 3px solid #f6821f; font-size: 13px; }
+    .input-row { display: flex; gap: 10px; margin-bottom: 20px; }
+    #promptInput {
+      flex: 1; padding: 10px 12px; background: #1a1a1a; color: #e0e0e0;
+      border: 1px solid #444; border-radius: 4px; font-family: monospace;
+      font-size: 13px; resize: none;
+    }
+    #promptInput:focus { outline: none; border-color: #f6821f; }
+    #runBtn {
+      padding: 10px 20px; background: #f6821f; color: #000; border: none;
+      border-radius: 4px; cursor: pointer; font-weight: bold; font-family: monospace;
+      font-size: 13px; white-space: nowrap; align-self: flex-end;
+      transition: background 0.15s;
+    }
+    #runBtn:hover { background: #ff9a3c; }
+    #runBtn:disabled { background: #555; cursor: not-allowed; color: #999; }
+    .accordion-item { border: 1px solid #333; margin-bottom: 10px; border-radius: 4px; overflow: hidden; background: #1a1a1a; transition: border-color 0.2s; }
+    .accordion-header { padding: 12px 16px; background: #222; cursor: pointer; display: flex; justify-content: space-between; align-items: center; font-weight: bold; font-size: 13px; user-select: none; }
+    .accordion-header:hover { background: #2a2a2a; }
+    .accordion-content { padding: 12px 16px; display: none; background: #0b0b0b; border-top: 1px solid #333; white-space: pre-wrap; font-size: 12px; color: #a5d6a7; line-height: 1.6; }
+    .state-pending { border-color: #333; }
+    .state-pending .accordion-header { color: #777; }
+    .state-running { border-color: #f6821f; }
+    .state-running .accordion-header { color: #f6821f; }
+    .state-running .accordion-content { display: block; }
+    .state-completed { border-color: #4caf50; }
+    .state-completed .accordion-header { color: #4caf50; }
+    .state-label { font-size: 11px; padding: 2px 8px; border-radius: 3px; background: rgba(255,255,255,0.05); }
+  </style>
+</head>
+<body>
+<div id="container">
+  <h2>&#9729; Cloudflare Coding Agent Workbench</h2>
+  <div id="statusUpdate" class="status-bar">System Status: Idle — ready to execute workspace tasks</div>
+  <div class="input-row">
+    <textarea id="promptInput" rows="2" placeholder="Enter a workspace task (e.g. create a folder named test, write a hello.ts file)"></textarea>
+    <button id="runBtn" onclick="runTask()">&#9654; Execute</button>
+  </div>
+  <div id="accordionWrapper"></div>
+</div>
+
+<script>
+  const runBtn = document.getElementById("runBtn");
+
+  function runTask() {
+    const prompt = document.getElementById("promptInput").value.trim();
+    if (!prompt) return;
+    triggerAgentTask(prompt, "workspace-001");
+  }
+
+  document.getElementById("promptInput").addEventListener("keydown", function(e) {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) runTask();
+  });
+
+  function toggleAccordion(index) {
+    const content = document.getElementById("log-" + index);
+    if (content) content.style.display = content.style.display === "block" ? "none" : "block";
+  }
+
+  async function triggerAgentTask(promptText, workspaceId) {
+    const statusUpdate = document.getElementById("statusUpdate");
+    const wrapper = document.getElementById("accordionWrapper");
+
+    statusUpdate.textContent = "System Status: Connecting to agent...";
+    wrapper.innerHTML = "";
+    runBtn.disabled = true;
+
+    try {
+      const response = await fetch("/api/agent/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: promptText, workspaceId })
+      });
+
+      if (!response.ok || !response.body) {
+        statusUpdate.textContent = "System Status: HTTP Error " + response.status;
+        runBtn.disabled = false;
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const messages = buffer.split("\n\n");
+        buffer = messages.pop() || "";
+
+        for (const msg of messages) {
+          const trimmed = msg.trim();
+          if (!trimmed.startsWith("data: ")) continue;
+          let data;
+          try { data = JSON.parse(trimmed.slice(6)); } catch { continue; }
+
+          if (data.event === "analysis_started") {
+            statusUpdate.textContent = "System Status: " + data.title;
+
+          } else if (data.event === "roadmap_ready") {
+            data.subtasks.forEach(function(task, i) {
+              const item = document.createElement("div");
+              item.className = "accordion-item state-pending";
+              item.id = "task-" + i;
+              item.innerHTML =
+                '<div class="accordion-header" onclick="toggleAccordion(' + i + ')">' +
+                  '<span>' + escapeHtml(task.title) + '</span>' +
+                  '<span class="state-label" id="label-' + i + '">PENDING</span>' +
+                '</div>' +
+                '<div class="accordion-content" id="log-' + i + '"></div>';
+              wrapper.appendChild(item);
+            });
+
+          } else if (data.event === "task_running") {
+            const item = document.getElementById("task-" + data.index);
+            const lbl = document.getElementById("label-" + data.index);
+            const log = document.getElementById("log-" + data.index);
+            if (item) item.className = "accordion-item state-running";
+            if (lbl) lbl.textContent = "RUNNING \u25cf";
+            if (log) log.textContent += data.log;
+            statusUpdate.textContent = "System Status: Running task " + (data.index + 1) + "...";
+
+          } else if (data.event === "task_progress") {
+            const log = document.getElementById("log-" + data.index);
+            if (log) log.textContent += data.log;
+
+          } else if (data.event === "task_completed") {
+            const item = document.getElementById("task-" + data.index);
+            const lbl = document.getElementById("label-" + data.index);
+            const log = document.getElementById("log-" + data.index);
+            if (item) item.className = "accordion-item state-completed";
+            if (lbl) lbl.textContent = "DONE \u2713";
+            if (log) log.textContent += data.log;
+
+          } else if (data.event === "stream_finished") {
+            statusUpdate.textContent = "System Status: All tasks completed \u2713";
+            runBtn.disabled = false;
+
+          } else if (data.event === "error") {
+            statusUpdate.textContent = "System Status: Error \u2014 " + data.message;
+            runBtn.disabled = false;
+          }
+        }
+      }
+    } catch (err) {
+      statusUpdate.textContent = "System Status: Connection error \u2014 " + err.message;
+    } finally {
+      runBtn.disabled = false;
+    }
+  }
+
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+</script>
+</body>
+</html>

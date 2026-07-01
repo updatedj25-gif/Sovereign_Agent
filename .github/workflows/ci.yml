@@ -1,12 +1,14 @@
-name: Deploy to Cloudflare Workers
+name: CI
 
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 
 jobs:
-  deploy:
-    name: Deploy worker
+  typecheck:
+    name: Typecheck (monorepo + workers)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,10 +25,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Deploy to Cloudflare Workers
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: workers
-          packageManager: pnpm
+      - name: Typecheck monorepo
+        run: pnpm run typecheck
+
+      - name: Typecheck Cloudflare Worker
+        run: pnpm --filter @workspace/workers run typecheck
