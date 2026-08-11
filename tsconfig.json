@@ -1,0 +1,45 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "experimentalDecorators": true,
+    "useDefineForClassFields": false,
+    "module": "ESNext",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "allowJs": true,
+    "jsx": "react-jsx",
+    "paths": {
+      "@/*": [
+        "./artifacts/sovereign-agent/src/*"
+      ],
+      "@workspace/api-client-react": [
+        "./lib/api-client-react/src/index.ts"
+      ],
+      "@workspace/db": [
+        "./lib/db/src/index.ts"
+      ],
+      "@workspace/api-zod": [
+        "./lib/api-zod/src/index.ts"
+      ],
+      "@workspace/api-spec": [
+        "./lib/api-spec"
+      ]
+    },
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  },
+  "exclude": [
+    "node_modules",
+    "dist",
+    "attached_assets",
+    "artifacts/**/dist",
+    "workers"
+  ]
+}

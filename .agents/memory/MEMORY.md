@@ -1,0 +1,3 @@
+- [Orval zod barrel conflict fix](orval-zod-barrel.md) — removing `schemas` from zod output config stops TS2308 duplicate-export collisions; run orval then overwrite the barrel.
+- [Express 5 wildcard routes](express5-wildcards.md) — path-to-regexp v8 (Express 5) rejects `*` and `(:param)(*)`; use query params for catch-all paths instead.
+- [Sovereign Agent architecture](sovereign-agent-arch.md) — full-stack coding agent: React/Vite frontend, Express API proxying Cloudflare AI, PostgreSQL task history, GitHub integration via server-side token proxy.
