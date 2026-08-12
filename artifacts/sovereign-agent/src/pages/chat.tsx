@@ -3,6 +3,7 @@ import { useShell } from "@/components/layout/Shell";
 import { LandingView } from "@/components/chat/LandingView";
 import { SplitChatView } from "@/components/chat/SplitChatView";
 import { HITLApprovalModal, PendingApprovalData } from "@/components/agent/HITLApprovalModal";
+import { VisualPreviewModal, VisualPreviewData } from "@/components/chat/VisualPreviewModal";
 import { ReActTurn } from "@/components/chat/ReActTimeline";
 import { saveChatSession, getChatHistory, ChatSessionItem } from "@/lib/chat-history";
 import WORKER_BASE from "@/lib/worker-base";
@@ -14,6 +15,7 @@ export interface ChatMessage {
   content: string;
   actions?: ActionItem[];
   reactTurns?: ReActTurn[];
+  visualPreview?: VisualPreviewData;
 }
 
 const saveMessageToBackend = async (sessionId: string, role: "user" | "assistant", content: string) => {
@@ -50,6 +52,7 @@ export default function Chat() {
   const [streamLogs, setStreamLogs] = useState<string[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [pendingApproval, setPendingApproval] = useState<PendingApprovalData | null>(null);
+  const [visualPreviewData, setVisualPreviewData] = useState<VisualPreviewData | null>(null);
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const messageBufferRef = useRef<string>("");
@@ -142,13 +145,38 @@ export default function Chat() {
                 });
               }
 
-              // 3. HITL Approval Required Event
-              else if (parsed.type === "hitl_approval_required") {
+              // 3. Visual Verification Captured Event
+              else if (parsed.type === "visual_verification_captured") {
+                const previewPayload: VisualPreviewData = {
+                  url: parsed.url,
+                  title: parsed.title,
+                  screenshotBase64: parsed.screenshotBase64,
+                  consoleLogs: parsed.consoleLogs,
+                  domSummarySnippet: parsed.domSummarySnippet,
+                  timestamp: new Date().toLocaleTimeString(),
+                };
+
+                setVisualPreviewData(previewPayload);
+
+                setMessages((prev) => {
+                  const updated = [...prev];
+                  if (updated.length > 0 && updated[updated.length - 1].role === "assistant") {
+                    updated[updated.length - 1] = {
+                      ...updated[updated.length - 1],
+                      visualPreview: previewPayload,
+                    };
+                  }
+                  return updated;
+                });
+              }
+
+              // 4. HITL Approval Required Event
+              else if (parsed.type === "hitl_approval_required" || parsed.type === "approval_required") {
                 setPendingApproval({
                   approvalId: parsed.approvalId,
-                  toolName: parsed.toolName,
-                  params: parsed.params,
-                  dangerReason: parsed.dangerReason,
+                  toolName: parsed.toolName || parsed.tool,
+                  params: parsed.params || parsed.arguments,
+                  dangerReason: parsed.dangerReason || parsed.message,
                 });
 
                 updateLastAssistantTurn((turns) => {
@@ -158,14 +186,14 @@ export default function Chat() {
                   next[lastIdx] = {
                     ...next[lastIdx],
                     status: "waiting_approval",
-                    dangerReason: parsed.dangerReason,
+                    dangerReason: parsed.dangerReason || parsed.message,
                     approvalId: parsed.approvalId,
                   };
                   return next;
                 });
               }
 
-              // 4. HITL Approved
+              // 5. HITL Approved
               else if (parsed.type === "hitl_approved") {
                 setPendingApproval((prev) => (prev?.approvalId === parsed.approvalId ? null : prev));
                 updateLastAssistantTurn((turns) => {
@@ -178,7 +206,7 @@ export default function Chat() {
                 });
               }
 
-              // 5. HITL Rejected
+              // 6. HITL Rejected
               else if (parsed.type === "hitl_rejected") {
                 setPendingApproval((prev) => (prev?.approvalId === parsed.approvalId ? null : prev));
                 updateLastAssistantTurn((turns) => {
@@ -191,9 +219,9 @@ export default function Chat() {
                 });
               }
 
-              // 6. Execution Progress / Log Event
+              // 7. Execution Progress / Log Event
               else if (parsed.type === "task_progress" || parsed.type === "task_running" || parsed.log) {
-                const chunk = parsed.stdout || parsed.stderr || parsed.log || "";
+                const chunk = parsed.stdout || parsed.stderr || parsed.log || parsed.output || "";
                 if (chunk) {
                   setStreamLogs((prev) => [...prev, chunk]);
                   updateLastAssistantTurn((turns) => {
@@ -207,7 +235,7 @@ export default function Chat() {
                 }
               }
 
-              // 7. Tool Completed
+              // 8. Tool Completed
               else if (parsed.type === "tool_completed") {
                 const turnNum = parsed.turn;
                 updateLastAssistantTurn((turns) => {
@@ -225,7 +253,7 @@ export default function Chat() {
                 });
               }
 
-              // 8. Stream Finished / Final Response
+              // 9. Stream Finished / Final Response
               else if (parsed.type === "stream_finished" || parsed.finalResponse) {
                 const finalTxt = parsed.finalResponse || parsed.response;
                 if (finalTxt) {
@@ -395,9 +423,14 @@ export default function Chat() {
 
       <HITLApprovalModal
         approvalData={pendingApproval}
-        onResolved={(_id, approved) => {
+        onResolved={(_id, _approved) => {
           setPendingApproval(null);
         }}
+      />
+
+      <VisualPreviewModal
+        data={visualPreviewData}
+        onClose={() => setVisualPreviewData(null)}
       />
     </>
   );

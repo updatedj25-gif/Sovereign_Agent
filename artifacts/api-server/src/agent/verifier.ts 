@@ -1,0 +1,206 @@
+import { z } from "zod";
+import { executeCommand } from "../tools/executor";
+import { globalToolRegistry } from "./tools/registry";
+
+export interface DiagnosticIssue {
+  type: "typescript" | "eslint" | "vitest";
+  filePath?: string;
+  line?: number;
+  column?: number;
+  ruleId?: string;
+  code?: string;
+  message: string;
+  rawOutput?: string;
+}
+
+export interface VerificationResult {
+  passed: boolean;
+  typecheckPassed: boolean;
+  lintPassed: boolean;
+  testPassed: boolean;
+  issues: DiagnosticIssue[];
+  summary: string;
+  rawStdout: string;
+  rawStderr: string;
+  durationMs: number;
+}
+
+export interface VerificationOptions {
+  cwd?: string;
+  scope?: "all" | "typecheck" | "test" | "lint";
+  timeoutMs?: number;
+}
+
+/**
+ * Execute automated project diagnostics (TypeScript compiler, ESLint, Vitest).
+ */
+export async function runVerificationSuite(
+  options: VerificationOptions = {}
+): Promise<VerificationResult> {
+  const cwd = options.cwd || process.cwd();
+  const scope = options.scope || "all";
+  const startTime = Date.now();
+
+  const issues: DiagnosticIssue[] = [];
+  let typecheckPassed = true;
+  let lintPassed = true;
+  let testPassed = true;
+
+  let combinedStdout = "";
+  let combinedStderr = "";
+
+  // 1. Run TypeScript Typecheck
+  if (scope === "all" || scope === "typecheck") {
+    const tsRes = await executeCommand({
+      command: "pnpm run typecheck",
+      cwd,
+      timeoutMs: options.timeoutMs || 45000,
+    });
+
+    combinedStdout += `\n[TYPECHECK STDOUT]\n${tsRes.stdout}`;
+    combinedStderr += `\n[TYPECHECK STDERR]\n${tsRes.stderr}`;
+
+    if (!tsRes.success) {
+      typecheckPassed = false;
+      const parsedIssues = parseTypeScriptErrors(tsRes.stdout + "\n" + tsRes.stderr);
+      issues.push(...parsedIssues);
+    }
+  }
+
+  // 2. Run Vitest Unit Tests
+  if (scope === "all" || scope === "test") {
+    const testRes = await executeCommand({
+      command: "pnpm --prefix artifacts/sovereign-agent test -- --run",
+      cwd,
+      timeoutMs: options.timeoutMs || 60000,
+    });
+
+    combinedStdout += `\n[TEST STDOUT]\n${testRes.stdout}`;
+    combinedStderr += `\n[TEST STDERR]\n${testRes.stderr}`;
+
+    if (!testRes.success) {
+      testPassed = false;
+      const parsedTestIssues = parseVitestFailures(testRes.stdout + "\n" + testRes.stderr);
+      issues.push(...parsedTestIssues);
+    }
+  }
+
+  const passed = typecheckPassed && lintPassed && testPassed;
+  const durationMs = Date.now() - startTime;
+
+  const summary = passed
+    ? `All verification checks passed in ${durationMs}ms.`
+    : `Verification failed with ${issues.length} issues (Typecheck: ${
+        typecheckPassed ? "PASS" : "FAIL"
+      }, Tests: ${testPassed ? "PASS" : "FAIL"}).`;
+
+  return {
+    passed,
+    typecheckPassed,
+    lintPassed,
+    testPassed,
+    issues,
+    summary,
+    rawStdout: combinedStdout,
+    rawStderr: combinedStderr,
+    durationMs,
+  };
+}
+
+/**
+ * Parse output lines from `tsc` into structured diagnostic objects.
+ */
+function parseTypeScriptErrors(output: string): DiagnosticIssue[] {
+  const issues: DiagnosticIssue[] = [];
+  // Regex matches pattern: src/app.ts(12,5): error TS2322: Type 'string' is not assignable to type 'number'.
+  const tsErrorRegex = /^(.+?)\((\d+),(\d+)\):\s+error\s+(TS\d+):\s+(.+)$/gm;
+
+  let match;
+  while ((match = tsErrorRegex.exec(output)) !== null) {
+    issues.push({
+      type: "typescript",
+      filePath: match[1].trim(),
+      line: parseInt(match[2], 10),
+      column: parseInt(match[3], 10),
+      code: match[4],
+      message: match[5].trim(),
+    });
+  }
+
+  if (issues.length === 0 && output.includes("error TS")) {
+    // Fallback if formatting differs
+    issues.push({
+      type: "typescript",
+      message: "TypeScript diagnostics error detected.",
+      rawOutput: output.slice(0, 1000),
+    });
+  }
+
+  return issues;
+}
+
+/**
+ * Parse Vitest test failure output logs.
+ */
+function parseVitestFailures(output: string): DiagnosticIssue[] {
+  const issues: DiagnosticIssue[] = [];
+
+  const failRegex = /FAIL\s+(.+?)\s+>\s+(.+)/g;
+  let match;
+  while ((match = failRegex.exec(output)) !== null) {
+    issues.push({
+      type: "vitest",
+      filePath: match[1].trim(),
+      message: `Test failure in '${match[2].trim()}'`,
+    });
+  }
+
+  if (issues.length === 0 && (output.includes("FAIL") || output.includes("Test Suites: failed"))) {
+    issues.push({
+      type: "vitest",
+      message: "Vitest test suite failure detected.",
+      rawOutput: output.slice(0, 1000),
+    });
+  }
+
+  return issues;
+}
+
+// ==========================================
+// Register Verification Tools in Registry
+// ==========================================
+
+globalToolRegistry.registerTool({
+  name: "verify_codebase",
+  description:
+    "Run automated project diagnostics (typechecking and vitest unit tests) and receive structured failure diagnostics.",
+  parameters: z.object({
+    scope: z
+      .enum(["all", "typecheck", "test", "lint"])
+      .optional()
+      .describe("Verification scope to execute (default: 'all')."),
+  }),
+  execute: async (args) => {
+    const result = await runVerificationSuite({ scope: args.scope });
+
+    return {
+      success: result.passed,
+      output: `${result.summary}\n\nDetailed Issues:\n` +
+        (result.issues.length > 0
+          ? result.issues
+              .map(
+                (i) =>
+                  `- [${i.type.toUpperCase()}] ${i.filePath || "Global"} ${
+                    i.line ? `(Line ${i.line}:${i.column})` : ""
+                  }: ${i.message}`
+              )
+              .join("\n")
+          : "None"),
+      data: {
+        passed: result.passed,
+        issuesCount: result.issues.length,
+        issues: result.issues,
+      },
+    };
+  },
+});
