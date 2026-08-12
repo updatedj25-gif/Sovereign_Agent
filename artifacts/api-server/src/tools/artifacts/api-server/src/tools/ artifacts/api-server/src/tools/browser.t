@@ -1,244 +1,149 @@
+import * as fs from "fs/promises";
+import * as path from "path";
 import { z } from "zod";
 import { globalToolRegistry, ToolExecutionResult, ToolExecutionContext } from "../agent/registry";
 
-export interface BrowserActionStep {
-  action: "navigate" | "click" | "type" | "wait_for_selector" | "screenshot";
-  selector?: string;
-  text?: string;
-  url?: string;
-  timeoutMs?: number;
+export interface ProcessLogEntry {
+  processName: string;
+  lines: string[];
+  hasError: boolean;
+  timestamp: string;
 }
 
-export interface InteractiveBrowserOptions {
-  url: string;
-  actions?: BrowserActionStep[];
-  viewportWidth?: number;
-  viewportHeight?: number;
-  timeoutMs?: number;
-}
+// Global in-memory log buffer tracking active background process outputs
+export class ProcessLogBuffer {
+  private static buffers = new Map<string, string[]>();
+  private static MAX_LINES = 500;
 
-export interface InteractiveBrowserResult {
-  success: boolean;
-  url: string;
-  title?: string;
-  screenshotBase64?: string;
-  consoleLogs: Array<{ type: string; text: string }>;
-  domSummary?: string;
-  executedActionsCount: number;
-  error?: string;
-  durationMs: number;
-}
+  public static appendLog(processName: string, text: string): void {
+    const existing = this.buffers.get(processName) || [];
+    const newLines = text.split("\n").filter(Boolean);
+    const updated = [...existing, ...newLines].slice(-this.MAX_LINES);
+    this.buffers.set(processName, updated);
+  }
 
-/**
- * Headless Playwright Browser Engine supporting multi-step UI interaction (click, type, wait, screenshot)
- */
-export async function runInteractiveBrowserSession(
-  options: InteractiveBrowserOptions
-): Promise<InteractiveBrowserResult> {
-  const {
-    url,
-    actions = [],
-    viewportWidth = 1280,
-    viewportHeight = 720,
-    timeoutMs = 20000,
-  } = options;
+  public static getLogs(
+    processName: string,
+    tailLinesCount: number = 50,
+    filterErrorOnly: boolean = false
+  ): string[] {
+    const lines = this.buffers.get(processName) || [];
+    let filtered = lines;
 
-  const startTime = Date.now();
-  const consoleLogs: Array<{ type: string; text: string }> = [];
-  let executedCount = 0;
-
-  try {
-    // Dynamic import Playwright to handle environments gracefully
-    const { chromium } = await import("playwright");
-
-    const browser = await chromium.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
-    });
-
-    const page = await browser.newPage({
-      viewport: { width: viewportWidth, height: viewportHeight },
-    });
-
-    // Attach console log listeners
-    page.on("console", (msg) => {
-      consoleLogs.push({ type: msg.type(), text: msg.text() });
-    });
-    page.on("pageerror", (err) => {
-      consoleLogs.push({ type: "error", text: err.message });
-    });
-
-    // 1. Initial Page Navigation
-    await page.goto(url, { waitUntil: "networkidle", timeout: timeoutMs });
-
-    // 2. Execute Sequence of UI Interaction Steps
-    for (const step of actions) {
-      const stepTimeout = step.timeoutMs || 5000;
-
-      if (step.action === "navigate" && step.url) {
-        await page.goto(step.url, { waitUntil: "networkidle", timeout: stepTimeout });
-      } else if (step.action === "click" && step.selector) {
-        await page.waitForSelector(step.selector, { timeout: stepTimeout });
-        await page.click(step.selector);
-      } else if (step.action === "type" && step.selector && step.text !== undefined) {
-        await page.waitForSelector(step.selector, { timeout: stepTimeout });
-        await page.fill(step.selector, step.text);
-      } else if (step.action === "wait_for_selector" && step.selector) {
-        await page.waitForSelector(step.selector, { timeout: stepTimeout });
-      }
-
-      executedCount++;
+    if (filterErrorOnly) {
+      filtered = lines.filter((l) =>
+        /error|exception|fail|rejected|unhandled|500/i.test(l)
+      );
     }
 
-    const title = await page.title();
+    return filtered.slice(-tailLinesCount);
+  }
 
-    // 3. Capture Visual Screenshot Base64
-    const screenshotBuffer = await page.screenshot({ fullPage: false, type: "png" });
-    const screenshotBase64 = `data:image/png;base64,${screenshotBuffer.toString("base64")}`;
+  public static listActiveProcesses(): string[] {
+    return Array.from(this.buffers.keys());
+  }
 
-    // 4. Extract Text Content Summary
-    const domSummary = await page.evaluate(() => {
-      return document.body ? document.body.innerText.slice(0, 1500) : "";
-    });
-
-    await browser.close();
-
-    return {
-      success: true,
-      url: page.url() || url,
-      title,
-      screenshotBase64,
-      consoleLogs,
-      domSummary,
-      executedActionsCount: executedCount,
-      durationMs: Date.now() - startTime,
-    };
-  } catch (err: any) {
-    return {
-      success: false,
-      url,
-      consoleLogs,
-      executedActionsCount: executedCount,
-      error: `Interactive browser session failed: ${err.message || String(err)}`,
-      durationMs: Date.now() - startTime,
-    };
+  public static clearBuffer(processName: string): void {
+    this.buffers.delete(processName);
   }
 }
 
+/**
+ * Scan log files in project directories (e.g. pino log files, .log files)
+ */
+export async function readLogFile(
+  logFilePath: string,
+  tailLinesCount: number = 50
+): Promise<string[]> {
+  const fullPath = path.resolve(process.cwd(), logFilePath);
+  const content = await fs.readFile(fullPath, "utf-8");
+  const lines = content.split("\n").filter(Boolean);
+  return lines.slice(-tailLinesCount);
+}
+
 // ==========================================
-// Register Interactive Browser Tools
+// Register Process & Log Monitoring Tools
 // ==========================================
 
 globalToolRegistry.registerTool({
-  name: "capture_page_screenshot",
+  name: "tail_process_logs",
   description:
-    "Launch a headless browser session to navigate a web app URL, capture a visual screenshot, and collect browser console error logs.",
+    "Tail and inspect recent stdout/stderr output lines from active background processes (e.g. dev server, API server, background tasks).",
   parameters: z.object({
-    url: z.string().url().describe("Target preview URL to visually inspect (e.g. 'http://localhost:5173')."),
-    waitForSelector: z.string().optional().describe("Optional CSS selector to wait for before taking screenshot."),
-    viewportWidth: z.number().optional().describe("Viewport width in pixels (default: 1280)."),
-    viewportHeight: z.number().optional().describe("Viewport height in pixels (default: 720)."),
+    processName: z
+      .string()
+      .optional()
+      .describe("Name of the background process (defaults to 'api-server' or 'dev')."),
+    tailLinesCount: z.number().optional().describe("Number of recent log lines to return (default: 50)."),
+    filterErrorOnly: z.boolean().optional().describe("Filter output to show only error log lines."),
   }),
   execute: async (args, context: ToolExecutionContext): Promise<ToolExecutionResult> => {
-    const actions: BrowserActionStep[] = [];
-    if (args.waitForSelector) {
-      actions.push({ action: "wait_for_selector", selector: args.waitForSelector });
-    }
+    const targetProcess = args.processName || "api-server";
+    const lines = ProcessLogBuffer.getLogs(
+      targetProcess,
+      args.tailLinesCount || 50,
+      args.filterErrorOnly || false
+    );
 
-    const result = await runInteractiveBrowserSession({
-      url: args.url,
-      actions,
-      viewportWidth: args.viewportWidth,
-      viewportHeight: args.viewportHeight,
-    });
+    const activeList = ProcessLogBuffer.listActiveProcesses();
 
-    if (!result.success) {
+    if (lines.length === 0) {
       return {
-        success: false,
-        output: `Visual verification failed for ${args.url}: ${result.error}`,
-        error: "BROWSER_INSPECTION_FAILED",
+        success: true,
+        output: `No recent logs buffered for process '${targetProcess}'.\nActive monitored processes: ${
+          activeList.join(", ") || "none"
+        }`,
+        data: { activeProcesses: activeList },
       };
     }
 
-    context.emitEvent?.({
-      type: "visual_verification_captured",
-      url: result.url,
-      title: result.title,
-      screenshotBase64: result.screenshotBase64,
-      consoleLogsCount: result.consoleLogs.length,
-      domSummarySnippet: result.domSummary?.slice(0, 200),
-    });
-
-    const errorLogs = result.consoleLogs.filter((l) => l.type === "error");
-
     return {
       success: true,
-      output: `Captured visual screenshot of '${result.url}' (${result.title || "Untitled"}).\nBrowser Console Errors: ${
-        errorLogs.length
-      }\nDOM Snippet: "${result.domSummary?.slice(0, 150)}..."`,
-      data: result,
+      output: `TAIL LOGS [${targetProcess}] (Last ${lines.length} lines):\n\n${lines.join("\n")}`,
+      data: {
+        processName: targetProcess,
+        linesCount: lines.length,
+        lines,
+      },
     };
   },
 });
 
 globalToolRegistry.registerTool({
-  name: "interactive_browser_action",
+  name: "inspect_server_logs",
   description:
-    "Execute an interactive end-to-end UI testing flow (clicking elements, typing inputs, submitting forms) and capture updated screenshots.",
+    "Scan project log files for runtime errors, unhandled promise rejections, 500 status codes, or stack traces.",
   parameters: z.object({
-    url: z.string().url().describe("Starting page URL."),
-    actions: z
-      .array(
-        z.object({
-          action: z.enum(["navigate", "click", "type", "wait_for_selector", "screenshot"]),
-          selector: z.string().optional().describe("CSS selector for target element."),
-          text: z.string().optional().describe("Text input value for 'type' action."),
-          url: z.string().optional().describe("Target URL for 'navigate' action."),
-        })
-      )
-      .describe("Array of UI interaction steps to execute in sequence."),
+    logFilePath: z.string().describe("Relative file path to log file (e.g. 'logs/server.log')."),
+    tailLinesCount: z.number().optional().describe("Number of recent lines to scan (default: 50)."),
   }),
   execute: async (args, context: ToolExecutionContext): Promise<ToolExecutionResult> => {
     try {
       context.emitEvent?.({
-        type: "interactive_browser_started",
-        url: args.url,
-        actionsCount: args.actions.length,
+        type: "inspect_logs_started",
+        filePath: args.logFilePath,
       });
 
-      const result = await runInteractiveBrowserSession({
-        url: args.url,
-        actions: args.actions as BrowserActionStep[],
-      });
+      const lines = await readLogFile(args.logFilePath, args.tailLinesCount || 50);
 
-      if (!result.success) {
-        return {
-          success: false,
-          output: `Interactive Browser Flow Failed at step ${result.executedActionsCount}: ${result.error}`,
-          error: "INTERACTIVE_FLOW_FAILED",
-        };
-      }
-
-      context.emitEvent?.({
-        type: "visual_verification_captured",
-        url: result.url,
-        title: result.title,
-        screenshotBase64: result.screenshotBase64,
-        consoleLogsCount: result.consoleLogs.length,
-      });
+      const errorLines = lines.filter((l) =>
+        /error|exception|fail|rejected|500/i.test(l)
+      );
 
       return {
         success: true,
-        output: `Executed ${result.executedActionsCount} UI action(s) on '${result.url}'.\nFinal Title: ${result.title}\nConsole Errors: ${
-          result.consoleLogs.filter((l) => l.type === "error").length
-        }`,
-        data: result,
+        output: `Log Inspection for '${args.logFilePath}' (${lines.length} lines, ${errorLines.length} error lines):\n\n${lines.join("\n")}`,
+        data: {
+          filePath: args.logFilePath,
+          totalLines: lines.length,
+          errorCount: errorLines.length,
+        },
       };
     } catch (err: any) {
       return {
         success: false,
-        output: `Interactive Browser Flow Execution Error: ${err.message}`,
-        error: "INTERACTIVE_BROWSER_ERROR",
+        output: `Failed to read log file '${args.logFilePath}': ${err.message}`,
+        error: "LOG_READ_FAILED",
       };
     }
   },
