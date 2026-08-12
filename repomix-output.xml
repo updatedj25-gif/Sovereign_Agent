@@ -47,13 +47,9 @@ The content is organized as follows:
     MEMORY.md
     orval-zod-barrel.md
     sovereign-agent-arch.md
-workers/
-  dist-api/
-    README.md
 CODEBASE.md
 DEPLOYMENT.md
 README.md
-replit.md
 </directory_structure>
 
 <files>
@@ -370,76 +366,6 @@ pnpm run typecheck
 ```
 </file>
 
-<file path="replit.md">
-# Sovereign Agent
-
-A modern full-stack AI coding agent — chat with Cloudflare-powered AI, track agentic task execution in real time, and manage GitHub repos all from one cockpit-style interface.
-
-## Run & Operate
-
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 8080, served at `/api`)
-- `pnpm --filter @workspace/sovereign-agent run dev` — run the frontend (served at `/`)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec (run orval separately first, then fix barrel — see Gotchas)
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-
-## Stack
-
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- Frontend: React + Vite + Tailwind CSS (dark Amber Carbon theme)
-- API: Express 5 at `artifacts/api-server/`
-- DB: PostgreSQL + Drizzle ORM (`task_groups`, `commands` tables)
-- AI: Cloudflare Workers AI REST API (`@cf/meta/llama-3.3-70b-instruct-fp8-fast`)
-- GitHub: Server-side proxy using `GITHUB_TOKEN` secret
-- API codegen: Orval (from OpenAPI spec in `lib/api-spec/openapi.yaml`)
-
-## Where things live
-
-- `artifacts/sovereign-agent/src/pages/chat.tsx` — main chat + SSE streaming UI
-- `artifacts/sovereign-agent/src/pages/` — tasks list, task detail, github panel
-- `artifacts/api-server/src/routes/agent.ts` — Cloudflare AI chat + SSE streaming
-- `artifacts/api-server/src/routes/tasks.ts` — task group + command CRUD
-- `artifacts/api-server/src/routes/github.ts` — GitHub API proxy
-- `lib/api-spec/openapi.yaml` — single source of truth for all API contracts
-- `lib/db/src/schema/` — Drizzle ORM table definitions
-
-## Architecture decisions
-
-- **Cloudflare AI called server-side** — `CLOUDFLARE_API_KEY` and `CLOUDFLARE_EMAIL` never reach the client; the Express server proxies all AI requests.
-- **GitHub token server-side only** — `GITHUB_TOKEN` is a secret accessed only in `routes/github.ts`, never exposed to the frontend.
-- **SSE events use `type` field** — `{ type: "analysis_started"|"roadmap_ready"|... }` (not `event`). `roadmap_ready.subtasks` is `string[]`.
-- **File contents via query param** — `/api/github/repos/:owner/:repo/contents?path=<filepath>` uses a query param (not path segment) because Express 5 / path-to-regexp v8 rejects catch-all wildcard path params.
-- **Orval `schemas` option removed** — prevents TS2308 duplicate export collisions in `lib/api-zod`.
-
-## Product
-
-- **Console** (`/`) — Chat interface with live SSE streaming. Sends prompt → AI decomposes into subtasks → each subtask executes with real AI responses → final prose reply appended as assistant bubble.
-- **Tasks** (`/tasks`, `/tasks/:id`) — History of all agent sessions stored in PostgreSQL. Drill into any session to see subtask accordion and command logs.
-- **GitHub** (`/github`) — View authenticated user profile, browse repos, create new private/public repos. All via server-side GitHub token proxy.
-
-## Secrets required
-
-- `GITHUB_TOKEN` — GitHub Personal Access Token
-- `CLOUDFLARE_API_KEY` — Cloudflare Global API Key
-- `CLOUDFLARE_EMAIL` — Cloudflare account email
-- `SESSION_SECRET` — Express session secret
-
-## Gotchas
-
-- **Codegen barrel conflict** — Orval regenerates `lib/api-zod/src/index.ts` with both `./generated/api` and `./generated/types` exports, causing TS2308. Run `npx orval --config ./orval.config.ts` manually (not the full codegen script), then overwrite the barrel to `export * from "./generated/api";`, then run `pnpm run typecheck:libs`.
-- **Express 5 wildcards** — `path-to-regexp` v8 rejects `*` and `(:param)(*)` route patterns. Use query params for catch-all file paths.
-- **DB push before routes** — Always run `pnpm --filter @workspace/db run push` after schema changes before restarting the API server.
-
-## Pointers
-
-- See `.agents/memory/` for durable architecture notes
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
-</file>
-
-<file path="workers/dist-api/README.md">
-This folder contains the built output assets for the worker "sovereign-agent-api" generated at 2026-08-10T15:31:02.011Z.
-</file>
-
 <file path="DEPLOYMENT.md">
 # Sovereign Agent — Deployment & Monorepo Operations Guide
 
@@ -475,19 +401,9 @@ Sovereign_Agent/
 Ensure the following variables are configured in `.env` or passed via Cloudflare secrets:
 
 ```env
-# Cloudflare Workers AI (Primary LLM & Embedding Engine)
+GEMINI_API_KEY=your_gemini_api_key
 CLOUDFLARE_ACCOUNT_ID=your_cf_account_id
-CLOUDFLARE_API_KEY=your_cf_api_key
-CLOUDFLARE_EMAIL=your_cf_email
-
-# PostgreSQL Database
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/sovereign_agent
-
-# GitHub Server-side Proxy Secret
-GITHUB_TOKEN=ghp_your_github_personal_access_token
-
-# Execution Sandbox (Optional)
-E2B_API_KEY=e2b_your_api_key
+CLOUDFLARE_API_TOKEN=your_cf_api_token
 ```
 
 ---
@@ -558,37 +474,30 @@ curl -N https://sovereign-agent.trinityceo717.workers.dev/api/session/sovereign-
 </file>
 
 <file path="README.md">
-# Sovereign Agent
+<div align="center">
+<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
+</div>
 
-A fully autonomous software development engine powered by Cloudflare Workers AI, durable sandboxes, and Human-In-The-Loop execution.
+# Run and deploy your AI Studio app
 
-## Quick Start
+This contains everything you need to run your app locally.
 
-### Prerequisites
-- Node.js (v20+)
-- pnpm (v9+)
+View your app in AI Studio: https://ai.studio/apps/401adbcf-d492-4e6f-9e49-076767f7cdd9
 
-### Environment Setup
+## Run Locally
 
-1. Copy `.env.example` to `.env`:
-   ```bash
-   cp .env.example .env
-   ```
+**Prerequisites:**  Node.js
 
-2. Configure required credentials in `.env`:
-   - `CLOUDFLARE_ACCOUNT_ID`: Your Cloudflare Account ID
-   - `CLOUDFLARE_API_KEY`: Cloudflare API key / token with Workers AI permissions
-   - `CLOUDFLARE_EMAIL`: Cloudflare account email address
-   - `DATABASE_URL`: PostgreSQL connection string
 
-3. Run development server:
-   ```bash
-   pnpm run dev
-   ```
+1. Install dependencies:
+   `npm install`
+2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+3. Run the app:
+   `npm run dev`
 
 ## Cloudflare Edge Deployment
 
-For detailed Cloudflare Workers, Durable Objects, and monorepo deployment instructions, see [DEPLOYMENT.md](./DEPLOYMENT.md).
+For detailed Cloudflare Workers, Durable Objects, and pnpm monorepo deployment instructions, see [DEPLOYMENT.md](./DEPLOYMENT.md).
 </file>
 
 </files>
