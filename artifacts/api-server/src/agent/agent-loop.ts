@@ -1,8 +1,40 @@
 import { Response } from "express";
-import { db, taskGroupsTable, commandsTable } from "@workspace/db";
+import { db, taskGroups, commands } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { WORKSPACE_TOOLS, WorkspaceToolRunner } from "../tools/workspace-tools";
-import { cfAI } from "../routes/agent";
+
+/**
+ * Cloudflare AI REST client helper
+ */
+export async function cfAI(
+  messages: Array<{ role: string; content: string }>
+): Promise<string> {
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+  const apiKey = process.env.CLOUDFLARE_API_KEY;
+
+  if (!accountId || !apiKey) {
+    return "Cloudflare AI secrets (CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_KEY) are missing. Operating in fallback mode.";
+  }
+
+  try {
+    const res = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/meta/llama-3.3-70b-instruct-fp8-fast`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ messages }),
+      }
+    );
+
+    const json = await res.json();
+    return json.result?.response || json.result?.description || "Execution complete.";
+  } catch (err: any) {
+    return `AI invocation error: ${err.message}`;
+  }
+}
 
 export interface AgentRunOptions {
   prompt: string;
@@ -85,16 +117,18 @@ Available tools: read_file, write_file, apply_patch, list_directory, execute_com
     while (turnsRemaining > 0) {
       turnsRemaining--;
 
-      const taskTitle = subtasks[Math.min(maxTurns - turnsRemaining - 1, subtasks.length - 1)] || "Executing subtask";
+      const taskTitle =
+        subtasks[Math.min(maxTurns - turnsRemaining - 1, subtasks.length - 1)] ||
+        "Executing subtask";
 
       // Insert command log record in DB
       let commandId: number | undefined;
       if (dbTaskGroupId) {
         try {
           const [cmdRow] = await db
-            .insert(commandsTable)
+            .insert(commands)
             .values({
-              task_group_id: dbTaskGroupId,
+              taskGroupId: dbTaskGroupId,
               cmd: taskTitle,
             })
             .returning();
@@ -126,13 +160,13 @@ Available tools: read_file, write_file, apply_patch, list_directory, execute_com
       if (dbTaskGroupId && commandId) {
         try {
           await db
-            .update(commandsTable)
+            .update(commands)
             .set({
-              exit_code: executionResult.exitCode,
+              exitCode: executionResult.exitCode,
               stdout: executionResult.stdout.slice(0, 2000),
               stderr: executionResult.stderr.slice(0, 2000),
             })
-            .where(eq(commandsTable.id, commandId));
+            .where(eq(commands.id, commandId));
         } catch {
           /* ignore db update error */
         }
@@ -155,13 +189,19 @@ Available tools: read_file, write_file, apply_patch, list_directory, execute_com
   /**
    * Alternative stream entry point for direct Express response piping
    */
-  async runStream({ prompt, res, db: customDb, taskGroupsTable: tgTable, commandsTable: cmdTable }: AgentStreamOptions): Promise<void> {
+  async runStream({
+    prompt,
+    res,
+    db: customDb,
+    taskGroupsTable: tgTable,
+    commandsTable: cmdTable,
+  }: AgentStreamOptions): Promise<void> {
     this.sendSSE(res, { type: "analysis_started" });
 
     let taskGroupId: number | undefined;
     const targetDb = customDb || db;
-    const targetTgTable = tgTable || taskGroupsTable;
-    const targetCmdTable = cmdTable || commandsTable;
+    const targetTgTable = tgTable || taskGroups;
+    const targetCmdTable = cmdTable || commands;
 
     if (targetDb && targetTgTable) {
       try {
@@ -200,7 +240,7 @@ Available tools: read_file, write_file, apply_patch, list_directory, execute_com
           const [cmdRow] = await targetDb
             .insert(targetCmdTable)
             .values({
-              task_group_id: taskGroupId,
+              taskGroupId,
               cmd: taskTitle,
             })
             .returning();
@@ -228,7 +268,7 @@ Available tools: read_file, write_file, apply_patch, list_directory, execute_com
           await targetDb
             .update(targetCmdTable)
             .set({
-              exit_code: executionResult.exitCode,
+              exitCode: executionResult.exitCode,
               stdout: executionResult.stdout.slice(0, 2000),
               stderr: executionResult.stderr.slice(0, 2000),
             })

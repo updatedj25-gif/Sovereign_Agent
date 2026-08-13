@@ -14,6 +14,19 @@ function getGithubHeaders() {
   };
 }
 
+/**
+ * Safely encodes path segments while preserving forward slashes for GitHub REST API
+ */
+function formatGithubContentsUrl(owner: string, repo: string, filePath?: string): string {
+  if (!filePath || !filePath.trim()) {
+    return `${GITHUB_API_BASE}/repos/${owner}/${repo}/contents`;
+  }
+  
+  const cleanPath = filePath.replace(/^\/+|\/+$/g, "");
+  const encodedSegments = cleanPath.split("/").map(encodeURIComponent).join("/");
+  return `${GITHUB_API_BASE}/repos/${owner}/${repo}/contents/${encodedSegments}`;
+}
+
 // ==========================================
 // 1. GET /api/github/user — Authenticated user info
 // ==========================================
@@ -63,7 +76,7 @@ githubRouter.get("/repos/:owner/:repo/tree", async (req: Request, res: Response)
 
   try {
     const response = await fetch(
-      `${GITHUB_API_BASE}/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`,
+      `${GITHUB_API_BASE}/repos/${owner}/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`,
       { headers: getGithubHeaders() }
     );
 
@@ -87,7 +100,7 @@ githubRouter.get("/repos/:owner/:repo/contents", async (req: Request, res: Respo
   const filePath = (req.query.path as string) || "";
 
   try {
-    const url = `${GITHUB_API_BASE}/repos/${owner}/${repo}/contents/${encodeURIComponent(filePath)}`;
+    const url = formatGithubContentsUrl(owner, repo, filePath);
     const response = await fetch(url, { headers: getGithubHeaders() });
 
     if (!response.ok) {
@@ -97,7 +110,7 @@ githubRouter.get("/repos/:owner/:repo/contents", async (req: Request, res: Respo
     const data = (await response.json()) as any;
 
     // Decode base64 content if single file query
-    if (data.content && data.encoding === "base64") {
+    if (!Array.isArray(data) && data.content && data.encoding === "base64") {
       const decodedContent = Buffer.from(data.content, "base64").toString("utf-8");
       return res.json({
         ...data,
@@ -126,7 +139,7 @@ githubRouter.post("/repos/:owner/:repo/patch", async (req: Request, res: Respons
 
   try {
     // 1. Fetch original file contents from GitHub
-    const getUrl = `${GITHUB_API_BASE}/repos/${owner}/${repo}/contents/${encodeURIComponent(filePath)}?ref=${branch}`;
+    const getUrl = `${formatGithubContentsUrl(owner, repo, filePath)}?ref=${encodeURIComponent(branch)}`;
     const fileRes = await fetch(getUrl, { headers: getGithubHeaders() });
 
     if (!fileRes.ok) {
@@ -153,7 +166,7 @@ githubRouter.post("/repos/:owner/:repo/patch", async (req: Request, res: Respons
 
     // 3. Commit updated content back to GitHub via REST API
     const updatedBase64 = Buffer.from(patchResult.patchedCode!, "utf-8").toString("base64");
-    const putUrl = `${GITHUB_API_BASE}/repos/${owner}/${repo}/contents/${encodeURIComponent(filePath)}`;
+    const putUrl = formatGithubContentsUrl(owner, repo, filePath);
 
     const commitRes = await fetch(putUrl, {
       method: "PUT",

@@ -1,7 +1,8 @@
 import express, { Express, Request, Response, NextFunction } from "express";
 import cors from "cors";
 
-// Import Autonomous Agent Routers
+// Import Routers
+import { githubRouter } from "./routes/github";
 import { sandboxRouter } from "./routes/sandbox";
 import { perceptionRouter } from "./routes/perception";
 import { editRouter } from "./routes/file-edit";
@@ -31,6 +32,7 @@ app.get("/api/health", (_req: Request, res: Response) => {
     service: "Sovereign Agent API Server",
     version: "2.0.0",
     features: [
+      "GitHub REST Proxy & AST Patching",
       "E2B Sandbox Execution Engine",
       "AST & Ripgrep Code Perception",
       "Fuzzy Search/Replace Diff Engine",
@@ -45,6 +47,9 @@ app.get("/api/health", (_req: Request, res: Response) => {
 // ============================================================================
 // Mount Autonomous Agent Subsystem Routers
 // ============================================================================
+
+// 0. GitHub Proxy & AST Patching
+app.use("/api/github", githubRouter);
 
 // 1. Isolated Sandbox Execution Engine (E2B)
 app.use("/api/sandbox", sandboxRouter);
@@ -68,6 +73,16 @@ app.use("/api/safety", safetyRouter);
 app.use("/api/mcp", mcpRouter);
 
 // ============================================================================
+// Express 5 Fallback 404 Handler
+// ============================================================================
+app.use((_req: Request, res: Response) => {
+  res.status(404).json({
+    error: "Not Found",
+    message: "The requested API route does not exist.",
+  });
+});
+
+// ============================================================================
 // Global Error Handler
 // ============================================================================
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
@@ -82,6 +97,7 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 app.listen(PORT, () => {
   console.log(`
 🚀 Sovereign Autonomous Agent API Server running on port ${PORT}
+   - GitHub Proxy:    /api/github
    - Sandbox Engine:  /api/sandbox
    - Code Perception: /api/perception
    - Diff Engine:     /api/edit

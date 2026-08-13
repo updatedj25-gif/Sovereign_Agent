@@ -1,0 +1,118 @@
+openapi: 3.1.0
+info:
+  title: Sovereign Agent API
+  version: 2.0.0
+  description: OpenAPI Specification for Sovereign Autonomous Agent backend.
+paths:
+  /api/github/user:
+    get:
+      summary: Fetch authenticated GitHub user profile
+      operationId: getGithubUser
+      responses:
+        '200':
+          description: User profile object
+        '401':
+          description: Unauthorized
+
+  /api/github/repos:
+    get:
+      summary: List authenticated user repositories
+      operationId: getGithubRepos
+      responses:
+        '200':
+          description: List of user repositories
+
+  /api/github/repos/{owner}/{repo}/tree:
+    get:
+      summary: Fetch repository git file tree
+      operationId: getRepoTree
+      parameters:
+        - name: owner
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: repo
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: branch
+          in: query
+          required: false
+          schema:
+            type: string
+            default: main
+      responses:
+        '200':
+          description: Git tree structure
+
+  /api/github/repos/{owner}/{repo}/contents:
+    get:
+      summary: Fetch GitHub repository file or directory contents
+      operationId: getRepoContents
+      parameters:
+        - name: owner
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: repo
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: path
+          in: query
+          required: false
+          description: Relative file path within repository (uses query param for Express 5 compatibility)
+          schema:
+            type: string
+      responses:
+        '200':
+          description: File or directory contents object
+        '404':
+          description: Path or repository not found
+
+  /api/github/repos/{owner}/{repo}/patch:
+    post:
+      summary: Apply AST block patch and commit back to GitHub
+      operationId: patchRepoFile
+      parameters:
+        - name: owner
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: repo
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - path
+                - searchBlock
+                - replaceBlock
+              properties:
+                path:
+                  type: string
+                searchBlock:
+                  type: string
+                replaceBlock:
+                  type: string
+                commitMessage:
+                  type: string
+                branch:
+                  type: string
+                  default: main
+      responses:
+        '200':
+          description: Patch applied and committed successfully
+        '422':
+          description: Patch application or AST validation failed
