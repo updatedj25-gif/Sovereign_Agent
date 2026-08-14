@@ -6,7 +6,7 @@ export const githubRouter = Router();
 const GITHUB_API_BASE = "https://api.github.com";
 
 function getGithubHeaders() {
-  const token = process.env.GITHUB_TOKEN;
+  const token = process.env.GITHUB_API_TOKEN || process.env.GITHUB_TOKEN;
   return {
     Accept: "application/vnd.github.v3+json",
     "User-Agent": "Sovereign-Agent-Server",

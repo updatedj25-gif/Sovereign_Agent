@@ -1,7 +1,7 @@
 import { spawn, ChildProcess } from "child_process";
 import path from "path";
 import { z } from "zod";
-import { globalToolRegistry } from "../agent/tools/registry";
+import { globalToolRegistry, ToolExecutionContext } from "../agent/tools/registry";
 
 export interface CommandExecutionOptions {
   command: string;
@@ -78,7 +78,7 @@ export async function executeCommand(
 
   const fullCommandLine = `${command} ${args.join(" ")}`.trim();
 
-  // 1. Command Security Check
+  // Security Check
   for (const pattern of DANGEROUS_COMMAND_PATTERNS) {
     if (pattern.test(fullCommandLine)) {
       return {
@@ -99,7 +99,6 @@ export async function executeCommand(
   let isTimedOut = false;
 
   return new Promise((resolve) => {
-    // Determine shell execution mode
     const useShell = true;
     const workingDir = path.resolve(cwd);
 
@@ -120,7 +119,6 @@ export async function executeCommand(
       });
     }
 
-    // Timeout Enforcer
     const timer = setTimeout(() => {
       isTimedOut = true;
       if (childProcess && !childProcess.killed) {
@@ -128,14 +126,12 @@ export async function executeCommand(
       }
     }, timeoutMs);
 
-    // Stream Stdout
     childProcess.stdout?.on("data", (chunk: Buffer) => {
       const text = chunk.toString("utf-8");
       stdoutBuffer += text;
       if (onStdout) onStdout(text);
     });
 
-    // Stream Stderr
     childProcess.stderr?.on("data", (chunk: Buffer) => {
       const text = chunk.toString("utf-8");
       stderrBuffer += text;
@@ -180,10 +176,7 @@ export async function executeCommand(
   });
 }
 
-// ==========================================
-// Register Execution Tool in Registry
-// ==========================================
-
+// Register Tool
 globalToolRegistry.registerTool({
   name: "run_terminal_command",
   description:
@@ -194,24 +187,28 @@ globalToolRegistry.registerTool({
     cwd: z.string().optional().describe("Optional working directory relative to root."),
     timeoutMs: z.number().optional().describe("Execution timeout in milliseconds (default: 45000ms)."),
   }),
-  execute: async (args, context) => {
+  execute: async (args: any, context?: ToolExecutionContext) => {
     const result = await executeCommand({
       command: args.command,
       cwd: args.cwd,
       timeoutMs: args.timeoutMs,
       onStdout: (text) => {
-        context.emitEvent?.({
-          type: "command_stdout",
-          command: args.command,
-          chunk: text,
-        });
+        if (context?.emitEvent) {
+          context.emitEvent({
+            type: "command_stdout",
+            command: args.command,
+            chunk: text,
+          });
+        }
       },
       onStderr: (text) => {
-        context.emitEvent?.({
-          type: "command_stderr",
-          command: args.command,
-          chunk: text,
-        });
+        if (context?.emitEvent) {
+          context.emitEvent({
+            type: "command_stderr",
+            command: args.command,
+            chunk: text,
+          });
+        }
       },
     });
 

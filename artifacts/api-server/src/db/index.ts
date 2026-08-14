@@ -1,12 +1,12 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
-import * as schema from "@workspace/db/schema";
+import * as schema from "@workspace/db";
 import { eq } from "drizzle-orm";
 
 const connectionString = process.env.DATABASE_URL;
 
 export const pool = new Pool({
-  connectionString: connectionString || "postgres://localhost:5432/sovereign_agent",
+  connectionString: connectionString || "postgres://postgres:postgres@localhost:5432/sovereign_agent",
 });
 
 export const db = drizzle(pool, { schema });
@@ -83,3 +83,5 @@ export async function recordVisualSnapshot(data: {
   const [result] = await db.insert(schema.visualSnapshots).values(data).returning();
   return result;
 }
+
+export * from "@workspace/db";

@@ -1,7 +1,9 @@
 import React from "react";
 import { Switch, Route, Router as WouterRouter } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ShellProvider } from "./components/layout/Shell";
 import ChatPage from "./pages/chat";
+import TerminalPage from "./pages/terminal";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -13,20 +15,22 @@ const queryClient = new QueryClient({
 });
 
 export default function App() {
-  // Use BASE_URL for wouter base path to support Codespaces / Replit preview proxies
   const basePath = (import.meta.env.BASE_URL || "/").replace(/\/$/, "");
 
   return (
     <QueryClientProvider client={queryClient}>
       <WouterRouter base={basePath}>
-        <Switch>
-          <Route path="/" component={ChatPage} />
-          <Route>
-            <div className="p-8 text-center text-slate-400 font-mono">
-              404 - Page Not Found
-            </div>
-          </Route>
-        </Switch>
+        <ShellProvider>
+          <Switch>
+            <Route path="/" component={ChatPage} />
+            <Route path="/terminal" component={TerminalPage} />
+            <Route>
+              <div className="flex h-screen items-center justify-center bg-slate-950 p-8 text-center text-slate-400 font-mono text-xs">
+                404 - Page Not Found
+              </div>
+            </Route>
+          </Switch>
+        </ShellProvider>
       </WouterRouter>
     </QueryClientProvider>
   );

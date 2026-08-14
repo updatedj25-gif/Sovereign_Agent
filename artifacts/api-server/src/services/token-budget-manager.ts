@@ -7,10 +7,10 @@ export interface MessageNode {
 }
 
 export interface ContextBudgetConfig {
-  maxTotalTokens: number; // e.g. 16,000 or 128,000
-  systemPromptReserve: number; // e.g. 2,000 tokens reserved for system/tools
-  responseReserve: number; // e.g. 2,000 tokens reserved for LLM generation
-  maxHistoryTokens: number; // Remainder allocated for message history
+  maxTotalTokens: number;
+  systemPromptReserve: number;
+  responseReserve: number;
+  maxHistoryTokens: number;
 }
 
 export class TokenBudgetManager {
@@ -36,13 +36,11 @@ export class TokenBudgetManager {
     }
 
     if (!filePath.match(/\.(ts|tsx|js|jsx)$/)) {
-      // Fallback simple line truncation for non-JS/TS files
       const lines = code.split("\n");
-      const keepLines = Math.floor(targetTokenLimit * 3.8 / 40);
+      const keepLines = Math.floor((targetTokenLimit * 3.8) / 40);
       return `${lines.slice(0, keepLines).join("\n")}\n\n// ... [File truncated: ${lines.length - keepLines} lines omitted for token budget]`;
     }
 
-    // AST-aware truncation using TypeScript Compiler API
     const sourceFile = ts.createSourceFile(
       filePath,
       code,
@@ -54,7 +52,6 @@ export class TokenBudgetManager {
     const lines = code.split("\n");
     const collapsedLines = [...lines];
 
-    // Collapse function bodies and class methods
     const visit = (node: ts.Node) => {
       if (
         (ts.isFunctionDeclaration(node) ||
@@ -63,17 +60,17 @@ export class TokenBudgetManager {
         node.body
       ) {
         const startPos = sourceFile.getLineAndCharacterOfPosition(node.body.getStart(sourceFile));
-        const endPos = sourceFile.getLineAndCharacterOfPosition(node.body.getEnd(sourceFile));
+        // Fix: node.body.getEnd() takes 0 arguments in TS Compiler API
+        const endPos = sourceFile.getLineAndCharacterOfPosition(node.body.getEnd());
 
         const startLine = startPos.line;
         const endLine = endPos.line;
 
         if (endLine - startLine > 4) {
-          // Keep signature line and opening brace, collapse middle
           const indent = " ".repeat(startPos.character + 2);
           collapsedLines[startLine + 1] = `${indent}// ... [Function body collapsed: ${endLine - startLine - 2} lines omitted]`;
           for (let l = startLine + 2; l < endLine; l++) {
-            collapsedLines[l] = ""; // Blank out collapsed lines
+            collapsedLines[l] = "";
           }
         }
       }
@@ -82,8 +79,7 @@ export class TokenBudgetManager {
 
     visit(sourceFile);
 
-    const truncatedResult = collapsedLines.filter((l) => l !== "").join("\n");
-    return truncatedResult;
+    return collapsedLines.filter((l) => l !== "").join("\n");
   }
 
   /**
@@ -96,7 +92,7 @@ export class TokenBudgetManager {
     const systemMessages = messages.filter((m) => m.role === "system");
     let historyMessages = messages.filter((m) => m.role !== "system");
 
-    let currentTotalTokens =
+    const currentTotalTokens =
       systemMessages.reduce((sum, m) => sum + this.estimateTokens(m.content), 0) +
       historyMessages.reduce((sum, m) => sum + this.estimateTokens(m.content), 0);
 
@@ -107,17 +103,11 @@ export class TokenBudgetManager {
       return messages;
     }
 
-    console.log(
-      `[Token Budget Manager] Exceeded history limit (${currentTotalTokens} / ${maxAllowedHistoryTokens} tokens). Optimizing context...`
-    );
-
-    // Keep system prompt + last 4 turns (recent active window)
     const recentWindowCount = 4;
     if (historyMessages.length > recentWindowCount) {
       const olderMessages = historyMessages.slice(0, historyMessages.length - recentWindowCount);
       const recentMessages = historyMessages.slice(historyMessages.length - recentWindowCount);
 
-      // Summarize older turns into a single high-level summary node
       const summaryText = this.createSummaryNode(olderMessages);
 
       historyMessages = [

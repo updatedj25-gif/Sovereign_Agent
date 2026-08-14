@@ -3,8 +3,7 @@ import * as fs from "node:fs/promises";
 import { exec as execCb } from "node:child_process";
 import { promisify } from "node:util";
 import { z, ZodSchema } from "zod";
-import { SandboxExecutor } from "../services/sandbox";
-import { DiffEngine } from "../services/diff-patch";
+import { E2BSandboxManager } from "../services/e2b-sandbox";
 
 const exec = promisify(execCb);
 
@@ -28,6 +27,123 @@ export interface ToolDefinition {
   schema: ZodSchema;
   execute(args: Record<string, any>, context: AgentContext): Promise<ToolResult>;
 }
+
+/**
+ * Sandbox Execution Wrapper Class
+ */
+export class SandboxExecutor {
+  constructor(public workspaceRoot?: string) {}
+
+  async readFile(targetPath: string, _encoding?: string): Promise<string> {
+    try {
+      return await E2BSandboxManager.readFile("default-session", targetPath);
+    } catch {
+      return await safeReadFile(resolveSafePath(this.workspaceRoot || process.cwd(), targetPath));
+    }
+  }
+
+  async writeFile(targetPath: string, content: string): Promise<string> {
+    try {
+      await E2BSandboxManager.writeFile("default-session", targetPath, content);
+      return `File ${targetPath} written successfully in sandbox.`;
+    } catch {
+      await safeWriteFile(resolveSafePath(this.workspaceRoot || process.cwd(), targetPath), content);
+      return `File ${targetPath} written locally.`;
+    }
+  }
+
+  async listDirectory(targetPath: string, recursive = false): Promise<string> {
+    try {
+      const fullPath = resolveSafePath(this.workspaceRoot || process.cwd(), targetPath || ".");
+      return await safeListDirectory(fullPath, recursive);
+    } catch (error: any) {
+      return `Error listing directory: ${error.message}`;
+    }
+  }
+
+  async executeCommand(
+    command: string,
+    options?: { cwd?: string; timeoutMs?: number }
+  ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+    try {
+      const res = await E2BSandboxManager.executeCommand(
+        "default-session",
+        command,
+        options?.cwd,
+        options?.timeoutMs
+      );
+      return { stdout: res.stdout, stderr: res.stderr, exitCode: res.exitCode };
+    } catch {
+      return await safeExecuteCommand(
+        command,
+        options?.cwd || this.workspaceRoot || process.cwd(),
+        options?.timeoutMs || 120000
+      );
+    }
+  }
+
+  async grepSearch(
+    pattern: string,
+    targetPath: string = ".",
+    _includePattern?: string
+  ): Promise<{ success: boolean; output: string; error?: string }> {
+    try {
+      const res = await E2BSandboxManager.executeCommand(
+        "default-session",
+        `grep -rn "${pattern}" ${targetPath}`
+      );
+      return { success: res.exitCode === 0, output: res.stdout || res.stderr };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  }
+}
+
+/**
+ * Precision Search/Replace Diff Engine Wrapper Class
+ */
+export class DiffEngine {
+  constructor(public workspaceRoot?: string) {}
+
+  async applyDiff(
+    filePath: string,
+    replaceBlock: string,
+    _mode = "search-replace",
+    _root?: string,
+    searchBlock?: string,
+    _newBlock?: string
+  ): Promise<{ success: boolean; output: string; error?: string; diff?: string }> {
+    try {
+      const fullPath = resolveSafePath(this.workspaceRoot || process.cwd(), filePath);
+      const original = await fs.readFile(fullPath, "utf-8");
+
+      if (searchBlock && !original.includes(searchBlock)) {
+        return {
+          success: false,
+          output: "",
+          error: `SEARCH block not found inside file: ${filePath}`,
+        };
+      }
+
+      const patched = searchBlock
+        ? original.replace(searchBlock, replaceBlock)
+        : replaceBlock;
+
+      await fs.writeFile(fullPath, patched, "utf-8");
+      return {
+        success: true,
+        output: `Successfully applied diff patch to ${filePath}`,
+        diff: `- ${searchBlock}\n+ ${replaceBlock}`,
+      };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  }
+}
+
+// ==========================================
+// Zod Schema Tool Definitions
+// ==========================================
 
 export const ReadFileSchema = z.object({
   path: z.string().min(1),
@@ -124,12 +240,11 @@ async function safeExecuteCommand(
   const sanitizedCwd = path.resolve(cwd);
   return exec(command, { cwd: sanitizedCwd, timeout: timeoutMs, maxBuffer: 20 * 1024 * 1024 })
     .then((result) => ({ stdout: result.stdout, stderr: result.stderr, exitCode: 0 }))
-    .catch((error: any) => {
-      if (error.killed || error.signal) {
-        return { stdout: error.stdout ?? "", stderr: error.stderr ?? "", exitCode: error.code ?? 1 };
-      }
-      return { stdout: error.stdout ?? "", stderr: error.stderr ?? "", exitCode: error.code ?? 1 };
-    });
+    .catch((error: any) => ({
+      stdout: error.stdout ?? "",
+      stderr: error.stderr ?? error.message ?? "",
+      exitCode: error.code ?? 1,
+    }));
 }
 
 function jsonSchemaFromZod(schema: ZodSchema): Record<string, any> {
@@ -156,7 +271,7 @@ export const tools: ToolDefinition[] = [
         const content = await executor.readFile(targetPath, encodingOption);
         return { success: true, output: content };
       } catch (error: any) {
-        return { success: false, output: "", error: error.message }; 
+        return { success: false, output: "", error: error.message };
       }
     },
   },

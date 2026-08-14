@@ -11,8 +11,8 @@
     "dev": "tsx server.ts",
     "dev:api": "tsx artifacts/api-server/src/index.ts",
     "dev:frontend": "vite",
-    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
-    "start": "node dist/server.cjs",
+    "build": "vite build && esbuild server.ts --bundle --platform=node --format=esm --packages=external --sourcemap --outfile=dist/server.js",
+    "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "sync:github": "tsx scripts/sync-github.ts"
   },
@@ -101,6 +101,9 @@
     "wouter": "^3.3.5",
     "ws": "^8.21.3",
     "zod": "^3.25.76"
+  },
+  "optionalDependencies": {
+    "@rollup/rollup-linux-x64-gnu": "^4.34.8"
   },
   "devDependencies": {
     "@types/cookie-parser": "^1.4.10",

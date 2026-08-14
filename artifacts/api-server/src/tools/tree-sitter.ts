@@ -15,6 +15,12 @@ export interface ASTSymbolNode {
   documentation?: string;
 }
 
+function hasExportModifier(node: ts.Node): boolean {
+  const modifiers = (node as any).modifiers;
+  if (!modifiers || !Array.isArray(modifiers)) return false;
+  return modifiers.some((m: any) => m.kind === ts.SyntaxKind.ExportKeyword);
+}
+
 /**
  * AST Symbol Navigation Helper
  * Inspects structural code semantics (functions, interfaces, classes, imports, exports) via TS Compiler API.
@@ -32,11 +38,8 @@ export function parseAstSymbols(sourceCode: string, fileName: string): ASTSymbol
   const symbols: ASTSymbolNode[] = [];
 
   function visit(node: ts.Node) {
-    // 1. Function Declarations
     if (ts.isFunctionDeclaration(node) && node.name) {
       const { line, character } = sourceFile.getLineAndCharacterOfPosition(node.getStart());
-      const isExported = hasExportModifier(node);
-
       symbols.push({
         name: node.name.text,
         kind: "Function",
@@ -44,12 +47,9 @@ export function parseAstSymbols(sourceCode: string, fileName: string): ASTSymbol
         column: character + 1,
         parameters: node.parameters.map((p) => p.name.getText(sourceFile)),
         returnType: node.type ? node.type.getText(sourceFile) : "void/inferred",
-        exported: isExported,
+        exported: hasExportModifier(node),
       });
-    }
-
-    // 2. Class Declarations
-    else if (ts.isClassDeclaration(node) && node.name) {
+    } else if (ts.isClassDeclaration(node) && node.name) {
       const { line, character } = sourceFile.getLineAndCharacterOfPosition(node.getStart());
       symbols.push({
         name: node.name.text,
@@ -58,10 +58,7 @@ export function parseAstSymbols(sourceCode: string, fileName: string): ASTSymbol
         column: character + 1,
         exported: hasExportModifier(node),
       });
-    }
-
-    // 3. Interface Declarations
-    else if (ts.isInterfaceDeclaration(node)) {
+    } else if (ts.isInterfaceDeclaration(node)) {
       const { line, character } = sourceFile.getLineAndCharacterOfPosition(node.getStart());
       symbols.push({
         name: node.name.text,
@@ -70,10 +67,7 @@ export function parseAstSymbols(sourceCode: string, fileName: string): ASTSymbol
         column: character + 1,
         exported: hasExportModifier(node),
       });
-    }
-
-    // 4. Type Alias Declarations
-    else if (ts.isTypeAliasDeclaration(node)) {
+    } else if (ts.isTypeAliasDeclaration(node)) {
       const { line, character } = sourceFile.getLineAndCharacterOfPosition(node.getStart());
       symbols.push({
         name: node.name.text,
@@ -91,17 +85,7 @@ export function parseAstSymbols(sourceCode: string, fileName: string): ASTSymbol
   return symbols;
 }
 
-function hasExportModifier(node: ts.Node): boolean {
-  return (
-    !!node.modifiers &&
-    node.modifiers.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)
-  );
-}
-
-// ==========================================
 // Register AST Query Tool
-// ==========================================
-
 globalToolRegistry.registerTool({
   name: "query_ast_symbols",
   description:
@@ -109,7 +93,7 @@ globalToolRegistry.registerTool({
   parameters: z.object({
     filePath: z.string().describe("Target file path relative to workspace root."),
   }),
-  execute: async (args) => {
+  execute: async (args: any) => {
     const absolutePath = path.resolve(args.filePath);
 
     if (!fs.existsSync(absolutePath)) {
@@ -150,7 +134,7 @@ globalToolRegistry.registerTool({
       return {
         success: false,
         output: `Failed to parse AST symbols: ${err.message}`,
-        error: "AST_PARSING_FAILED",
+        error: "AST_PARSER_ERROR",
       };
     }
   },

@@ -1,6 +1,6 @@
 {
-  "name": "",
-  "description": "",
+  "name": "Sovereign Agent",
+  "description": "Full-stack AI coding assistant and agentic development workspace with task planning, execution cockpit, and real-time streaming.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

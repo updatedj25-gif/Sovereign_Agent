@@ -7,3 +7,5 @@ coverage/
 .env*
 !.env.example
 cloudflare-config.json
+*.swp
+.env

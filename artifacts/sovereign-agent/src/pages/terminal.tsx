@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Shell } from "@/components/layout/Shell";
+import { Shell } from "../components/layout/Shell";
 import {
   Terminal as TerminalIcon,
   Play,
@@ -34,12 +34,11 @@ export default function TerminalPage() {
   const [inputCmd, setInputCmd] = useState("");
   const [logs, setLogs] = useState<CommandLogEntry[]>([]);
   const [isExecuting, setIsExecuting] = useState(false);
-  const [activeLogId, setActiveLogId] = useState<string | null>(null);
+  const [sessionId] = useState(() => `terminal_session_${Date.now()}`);
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const terminalBottomRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to bottom on output stream update
   useEffect(() => {
     terminalBottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
@@ -60,87 +59,62 @@ export default function TerminalPage() {
     };
 
     setLogs((prev) => [...prev, newEntry]);
-    setActiveLogId(logId);
     setIsExecuting(true);
     setInputCmd("");
 
     abortControllerRef.current = new AbortController();
 
     try {
-      // Stream command execution via SSE backend bridge
-      const response = await fetch("/api/terminal/stream", {
+      // Connect to Express 5 E2B Sandbox Execution Endpoint
+      const response = await fetch("/api/sandbox/exec", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ command: cmd }),
+        body: JSON.stringify({
+          sessionId,
+          command: cmd,
+        }),
         signal: abortControllerRef.current.signal,
       });
 
-      if (!response.ok || !response.body) {
-        throw new Error(`HTTP ${response.status}: Failed to initiate execution process.`);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: Failed to execute sandbox command.`);
       }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
+      const result = await response.json();
 
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n\n");
-        buffer = lines.pop() || "";
-
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            const jsonStr = line.replace(/^data:\s*/, "").trim();
-            if (!jsonStr) continue;
-
-            try {
-              const data = JSON.parse(jsonStr);
-
-              setLogs((prevLogs) =>
-                prevLogs.map((entry) => {
-                  if (entry.id !== logId) return entry;
-
-                  if (data.type === "stdout") {
-                    return { ...entry, stdout: entry.stdout + data.chunk };
-                  }
-                  if (data.type === "stderr") {
-                    return { ...entry, stderr: entry.stderr + data.chunk };
-                  }
-                  if (data.type === "finished") {
-                    return {
-                      ...entry,
-                      status: data.exitCode === 0 ? "success" : "failed",
-                      exitCode: data.exitCode,
-                      durationMs: data.durationMs,
-                    };
-                  }
-                  return entry;
-                })
-              );
-            } catch {
-              // Ignore partial JSON parse errors in stream
-            }
-          }
-        }
-      }
+      setLogs((prevLogs) =>
+        prevLogs.map((entry) => {
+          if (entry.id !== logId) return entry;
+          return {
+            ...entry,
+            status: result.exitCode === 0 ? "success" : "failed",
+            stdout: result.stdout || "",
+            stderr: result.stderr || "",
+            exitCode: result.exitCode ?? 1,
+            durationMs: result.durationMs,
+          };
+        })
+      );
     } catch (err: any) {
       if (err.name === "AbortError") {
         setLogs((prev) =>
-          prev.map((e) => (e.id === logId ? { ...e, status: "aborted", stderr: e.stderr + "\n[Execution cancelled by user]" } : e))
+          prev.map((e) =>
+            e.id === logId
+              ? { ...e, status: "aborted", stderr: e.stderr + "\n[Process cancelled by user]" }
+              : e
+          )
         );
       } else {
         setLogs((prev) =>
           prev.map((e) =>
-            e.id === logId ? { ...e, status: "failed", stderr: e.stderr + `\nExecution error: ${err.message}` } : e
+            e.id === logId
+              ? { ...e, status: "failed", stderr: e.stderr + `\nExecution error: ${err.message}` }
+              : e
           )
         );
       }
     } finally {
       setIsExecuting(false);
-      setActiveLogId(null);
       abortControllerRef.current = null;
     }
   };
@@ -163,10 +137,10 @@ export default function TerminalPage() {
           <div className="flex items-center gap-3">
             <TerminalIcon className="w-5 h-5 text-amber-500" />
             <h1 className="text-sm font-semibold tracking-wide text-slate-100">
-              SANDBOX TERMINAL CONSOLE
+              E2B SANDBOX TERMINAL CONSOLE
             </h1>
             <span className="px-2 py-0.5 text-xs rounded-md bg-amber-500/10 text-amber-400 border border-amber-500/20">
-              Isolated Process Engine
+              Isolated Linux VM
             </span>
           </div>
 
@@ -213,7 +187,7 @@ export default function TerminalPage() {
               <TerminalIcon className="w-10 h-10 text-slate-700" />
               <p className="text-sm">No commands executed in this session.</p>
               <p className="text-xs text-slate-600">
-                Type a command below or select a quick shortcut to launch a sandboxed process.
+                Type a command below or select a quick shortcut to launch a sandboxed process in E2B.
               </p>
             </div>
           ) : (
@@ -239,7 +213,7 @@ export default function TerminalPage() {
 
                     {log.status === "running" && (
                       <span className="flex items-center gap-1 text-amber-400 animate-pulse font-medium">
-                        Running...
+                        Executing in VM...
                       </span>
                     )}
                     {log.status === "success" && (
@@ -265,7 +239,7 @@ export default function TerminalPage() {
                   {log.stdout && <div className="text-slate-300">{log.stdout}</div>}
                   {log.stderr && <div className="text-red-400/90">{log.stderr}</div>}
                   {!log.stdout && !log.stderr && log.status === "running" && (
-                    <div className="text-slate-600 italic">Waiting for process output stream...</div>
+                    <div className="text-slate-600 italic">Executing inside E2B sandbox container...</div>
                   )}
                 </div>
               </div>
