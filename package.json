@@ -9,8 +9,8 @@
   ],
   "scripts": {
     "dev": "tsx server.ts",
+    "dev:api": "tsx artifacts/api-server/src/index.ts",
     "dev:frontend": "vite",
-    "dev:backend": "tsx artifacts/api-server/src/index.ts",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "start": "node dist/server.cjs",
     "typecheck": "tsc --noEmit",
