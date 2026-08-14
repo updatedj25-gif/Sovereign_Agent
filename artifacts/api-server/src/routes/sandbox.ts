@@ -19,7 +19,6 @@ sandboxRouter.get("/tree", async (req: Request, res: Response) => {
     const sessionId = (req.query.sessionId as string) || "default-session";
     const cwd = "/home/user/workspace";
 
-    // Find all files and directories excluding node_modules and .git
     const command = `find . -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "." | sort`;
     const exec = await E2BSandboxManager.executeCommand(sessionId, command, cwd);
 
@@ -29,8 +28,6 @@ sandboxRouter.get("/tree", async (req: Request, res: Response) => {
 
     const paths = exec.stdout.split("\n").filter(Boolean);
     const rootNodes: FileNode[] = [];
-
-    // Helper to build nested tree structure from paths
     const nodeMap = new Map<string, FileNode>();
 
     for (const rawPath of paths) {
@@ -68,7 +65,7 @@ sandboxRouter.get("/tree", async (req: Request, res: Response) => {
 
 /**
  * GET /api/sandbox/preview-url
- * Returns forwarded HTTPS preview URL for web server running inside E2B (e.g. Vite port 5173)
+ * Returns forwarded HTTPS preview URL for web server running inside E2B
  */
 sandboxRouter.get("/preview-url", async (req: Request, res: Response) => {
   try {
@@ -76,8 +73,6 @@ sandboxRouter.get("/preview-url", async (req: Request, res: Response) => {
     const port = parseInt((req.query.port as string) || "5173", 10);
 
     const sandbox = await E2BSandboxManager.getOrCreate(sessionId);
-    
-    // E2B JS SDK method for forwarded host port
     const forwardedHost = sandbox.getHost(port);
     const previewUrl = `https://${forwardedHost}`;
 
@@ -94,19 +89,30 @@ sandboxRouter.get("/preview-url", async (req: Request, res: Response) => {
 
 /**
  * POST /api/sandbox/exec
+ * Executes shell commands in the sandbox
  */
 sandboxRouter.post("/exec", async (req: Request, res: Response) => {
   try {
     const { sessionId, command, cwd } = req.body;
+
     if (!sessionId || !command) {
-      return res.status(400).json({ error: "sessionId and command required" });
+      return res.status(400).json({ error: "sessionId and command are required" });
     }
+
     const result = await E2BSandboxManager.executeCommand(sessionId, command, cwd);
     return res.json(result);
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
-});    const { sessionId, action, filePath, content } = req.body;
+});
+
+/**
+ * POST /api/sandbox/file
+ * Reads or writes code files inside the sandbox workspace
+ */
+sandboxRouter.post("/file", async (req: Request, res: Response) => {
+  try {
+    const { sessionId, action, filePath, content } = req.body;
 
     if (!sessionId || !filePath || !action) {
       return res.status(400).json({ error: "Missing required params" });

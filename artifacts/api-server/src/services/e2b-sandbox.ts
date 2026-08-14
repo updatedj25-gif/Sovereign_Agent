@@ -12,21 +12,39 @@ export class E2BSandboxManager {
 
   /**
    * Get an existing E2B Sandbox for a session or spawn a fresh one.
+   * If E2B_API_KEY is missing, operates in Mock/Dry-Run mode to prevent 500 crashes.
    */
   public static async getOrCreate(
     sessionId: string,
     timeoutMs: number = 10 * 60 * 1000 // Default 10 min
   ): Promise<Sandbox> {
     if (this.instanceMap.has(sessionId)) {
-      const existing = this.instanceMap.get(sessionId)!;
-      return existing;
+      return this.instanceMap.get(sessionId)!;
     }
 
     const apiKey = process.env.E2B_API_KEY;
     if (!apiKey) {
-      throw new Error(
-        "E2B_API_KEY environment variable is missing. Cannot create E2B execution sandbox."
+      console.warn(
+        `[E2B Sandbox] E2B_API_KEY environment secret is missing. Operating in Mock/Dry-Run mode.`
       );
+
+      // Return Mock Sandbox object for testing without API Key
+      return {
+        id: "mock-sandbox-id",
+        getHost: (port: number) => `localhost:${port}`,
+        commands: {
+          run: async (cmd: string) => ({
+            exitCode: 0,
+            stdout: `[E2B Dry-Run Output for: "${cmd}"]\nSet E2B_API_KEY in .env to execute in real cloud micro-VMs.`,
+            stderr: "",
+          }),
+        },
+        files: {
+          write: async () => {},
+          read: async () => "// E2B Dry-Run File Content",
+        },
+        kill: async () => {},
+      } as unknown as Sandbox;
     }
 
     console.log(`[E2B Sandbox] Spawning new sandbox for session: ${sessionId}`);
@@ -51,10 +69,10 @@ export class E2BSandboxManager {
     cwd: string = "/home/user/workspace",
     timeoutMs: number = 60_000
   ): Promise<ExecutionResult> {
-    const sandbox = await this.getOrCreate(sessionId);
     const startTime = Date.now();
 
     try {
+      const sandbox = await this.getOrCreate(sessionId);
       console.log(`[E2B Exec] Executing command: "${command}" in ${cwd}`);
       const result = await sandbox.commands.run(command, {
         cwd,
