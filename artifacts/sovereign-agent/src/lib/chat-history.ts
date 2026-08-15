@@ -33,11 +33,6 @@ export function saveChatSession(session: ChatSessionItem): void {
   }
 }
 
-export function getChatSession(id: string): ChatSessionItem | null {
-  const history = getChatHistory();
-  return history.find((s) => s.id === id) || null;
-}
-
 export function deleteChatSession(id: string): void {
   try {
     const history = getChatHistory().filter((s) => s.id !== id);
@@ -45,4 +40,9 @@ export function deleteChatSession(id: string): void {
   } catch (e) {
     console.error("Failed to delete chat session:", e);
   }
+}
+
+export function getChatSession(id: string): ChatSessionItem | null {
+  const history = getChatHistory();
+  return history.find((s) => s.id === id) || null;
 }
