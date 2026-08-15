@@ -118,18 +118,39 @@ export class AgentSession extends DurableObject {
   }
 }
 
+/**
+ * Legacy Durable Object Class Stub required by Cloudflare API during migrations
+ */
+export class BrowserRun extends DurableObject {
+  async fetch(_request: Request): Promise<Response> {
+    return new Response("BrowserRun class stub active", { status: 200 });
+  }
+}
+
 export default {
   async fetch(request: Request, env: Record<string, any>): Promise<Response> {
     const url = new URL(request.url);
 
+    // Health check endpoint
+    if (url.pathname === "/api/health") {
+      return Response.json({
+        status: "ok",
+        worker: "sovereign-agent",
+        edge: "Cloudflare Workers + Durable Objects",
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    // Proxy requests to AgentSession Durable Object
     if (url.pathname.startsWith("/api/session/")) {
       const parts = url.pathname.split("/");
       const sessionId = parts[3] || "sovereign-session-default";
 
-      const id = env.AGENT_SESSION.idFromName(sessionId);
-      const stub = env.AGENT_SESSION.get(id);
-
-      return stub.fetch(request);
+      if (env.AGENT_SESSION) {
+        const id = env.AGENT_SESSION.idFromName(sessionId);
+        const stub = env.AGENT_SESSION.get(id);
+        return stub.fetch(request);
+      }
     }
 
     return new Response("Sovereign Agent Worker Edge Gateway", { status: 200 });

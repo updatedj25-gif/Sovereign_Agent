@@ -1,4 +1,4 @@
-name: Deploy
+name: Deploy Cloudflare Workers
 
 on:
   push:
@@ -10,33 +10,39 @@ concurrency:
 
 jobs:
   deploy-workers:
-    name: Deploy to Cloudflare Workers
+    name: Deploy Workers to Cloudflare Edge
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
         with:
           version: 10
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node.js v20
+        uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 20
           cache: pnpm
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Install Dependencies
+        run: pnpm install --no-optional
 
-      - name: Deploy sovereign-agent worker
+      - name: Typecheck Workspace
+        run: pnpm run typecheck
+
+      - name: Deploy Main Orchestrator Worker (sovereign-agent)
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: workers
-          command: deploy
+          command: deploy --config wrangler.toml
 
-      - name: Deploy sovereign-agent-api worker
+      - name: Deploy Edge API Gateway Worker (sovereign-agent-api)
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
