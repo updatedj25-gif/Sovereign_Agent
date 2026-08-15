@@ -26,29 +26,48 @@ export interface ActionStep {
   output: string;
 }
 
-const SYSTEM_PROMPT = `You are Sovereign Agent, an expert Full-Stack Software Engineer running on Cloudflare Workers AI (Llama 3.3 70B).
-Your goal is to build complete, functional, modern, and beautiful React 19 UI components styled with Tailwind CSS.
+const SYSTEM_PROMPT = `You are Sovereign Agent, an expert React 19 + Tailwind CSS software engineer.
+You are building interactive UI components that render immediately inside a live browser preview.
 
 RULES:
-1. Always write complete, interactive React code with states (useState), handlers, realistic mock data, and polished Tailwind CSS.
-2. If building a modal (like Google OAuth, login, settings, etc.), make it fully interactive with open/close triggers, inputs, realistic Google logos (inline SVG), and buttons.
-3. Provide your complete React code inside a \`\`\`tsx ... \`\`\` code block.
-4. Do not leave placeholder comments like "// TODO" or "// rest of code here". Write the full, working implementation.`;
+1. Always name the main root component "App" (e.g., export default function App() { ... } or const App = () => { ... }).
+2. For modals, popups, or dialogs, make them visible by default (e.g., useState(true)) with interactive close/open buttons, form inputs, Google icons, and polished backdrop styling.
+3. Write clean, complete React code inside a single \`\`\`tsx ... \`\`\` code block.
+4. Use standard Tailwind CSS classes for styling (borders, gradients, shadows, flex/grid, transitions).`;
 
 /**
- * Sanitizes React code for browser standalone Babel execution
+ * Sanitizes React & TypeScript code and auto-aliases any component name to App
  */
 function sanitizeForLivePreview(rawCode: string): string {
   let code = rawCode;
-  // Remove markdown code fence if present
+  
+  // 1. Remove markdown fences
   code = code.replace(/^```(?:tsx|jsx|typescript|ts|javascript|js)?\n/i, "");
   code = code.replace(/\n```$/i, "");
-  // Strip import statements so browser doesn't throw module errors
-  code = code.replace(/import\s+(?:[\w*\s{},]*)\s+from\s+['"][^'"]+['"];?/g, "// [import]");
-  // Transform export default
+
+  // 2. Strip imports to avoid browser module errors
+  code = code.replace(/import\s+(?:type\s+)?(?:[\w*\s{},]*)\s+from\s+['"][^'"]+['"];?/g, "// [import]");
+  code = code.replace(/import\s+['"][^'"]+['"];?/g, "// [import]");
+
+  // 3. Normalize export default
   code = code.replace(/export\s+default\s+function\s+App/g, "function App");
   code = code.replace(/export\s+default\s+function\s+(\w+)/g, "function $1");
-  code = code.replace(/export\s+default\s+\w+;?/g, "");
+  code = code.replace(/export\s+default\s+(\w+);?/g, "const __defaultExport = $1;");
+
+  // 4. Auto-detect component names (e.g. GoogleOAuthModal, LoginModal, Dashboard)
+  const declaredComponents: string[] = [];
+  const compMatches = code.matchAll(/(?:const|function|let|var)\s+([A-Z]\w+)/g);
+  for (const m of compMatches) {
+    declaredComponents.push(m[1]);
+  }
+
+  // 5. If "App" is not defined, alias the first detected PascalCase component to App
+  if (!code.includes("function App") && !code.includes("const App") && !code.includes("let App") && !code.includes("var App")) {
+    if (declaredComponents.length > 0) {
+      code += `\nconst App = typeof __defaultExport !== 'undefined' ? __defaultExport : ${declaredComponents[0]};\n`;
+    }
+  }
+
   return code;
 }
 
@@ -74,14 +93,14 @@ function extractGeneratedFiles(aiText: string): Record<string, string> {
   }
 
   if (!files["src/App.tsx"] && blocks.length > 0) {
-    const appBlock = blocks.find((b) => b.includes("return") || b.includes("<") || b.includes("App")) || blocks[0];
+    const appBlock = blocks.find((b) => b.includes("return") || b.includes("<") || b.includes("const") || b.includes("function")) || blocks[0];
     if (appBlock) {
       files["src/App.tsx"] = appBlock;
     }
   }
 
-  // 3. Fallback: If AI returned raw code without markdown backticks
-  if (!files["src/App.tsx"] && (aiText.includes("function") || aiText.includes("return") || aiText.includes("<div"))) {
+  // 3. Fallback: If AI returned raw code without backticks
+  if (!files["src/App.tsx"] && (aiText.includes("function") || aiText.includes("const") || aiText.includes("return"))) {
     files["src/App.tsx"] = aiText.trim();
   }
 
@@ -89,7 +108,7 @@ function extractGeneratedFiles(aiText: string): Record<string, string> {
 }
 
 /**
- * Builds Standalone HTML with Tailwind + React + Babel + Lucide
+ * Builds the Standalone HTML with TypeScript preset + React 18 + Tailwind
  */
 function buildPreviewHtml(appCode: string, rawCss: string, title: string): string {
   const sanitizedCode = sanitizeForLivePreview(appCode);
@@ -107,7 +126,7 @@ function buildPreviewHtml(appCode: string, rawCss: string, title: string): strin
   <script src="https://unpkg.com/@babel/standalone@7.24.0/babel.min.js"></script>
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
   <style>
-    body { margin: 0; padding: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif; }
+    body { margin: 0; padding: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
     ${cleanCss}
   </style>
 </head>
@@ -115,7 +134,7 @@ function buildPreviewHtml(appCode: string, rawCss: string, title: string): strin
   <div id="root"></div>
   <div id="preview-error" class="hidden m-4 p-4 rounded-xl bg-red-950/90 border border-red-500/50 text-red-200 font-mono text-xs whitespace-pre-wrap"></div>
   
-  <script type="text/babel" data-presets="react,env">
+  <script type="text/babel" data-presets="react,typescript">
     const { useState, useEffect, useRef, useMemo, useCallback, useReducer, useContext, createContext } = React;
 
     window.onerror = function(msg, url, line) {
@@ -130,13 +149,19 @@ function buildPreviewHtml(appCode: string, rawCss: string, title: string): strin
     try {
       ${sanitizedCode}
 
-      const TargetComponent = typeof App !== 'undefined' ? App : () => (
-        <div className="min-h-screen bg-slate-900 text-white flex items-center justify-center p-6">
-          <h1 className="text-xl font-bold">Component Initialized</h1>
-        </div>
-      );
+      let ComponentToRender = null;
+      if (typeof App !== 'undefined') {
+        ComponentToRender = App;
+      } else if (typeof __defaultExport !== 'undefined') {
+        ComponentToRender = __defaultExport;
+      }
 
-      ReactDOM.createRoot(document.getElementById('root')).render(<TargetComponent />);
+      if (ComponentToRender) {
+        ReactDOM.createRoot(document.getElementById('root')).render(<ComponentToRender />);
+      } else {
+        document.getElementById('root').innerHTML = '<div class="p-8 text-center text-amber-400 font-bold">Component Initialized</div>';
+      }
+
       if (window.lucide) {
         setTimeout(() => window.lucide.createIcons(), 100);
       }
@@ -153,7 +178,7 @@ function buildPreviewHtml(appCode: string, rawCss: string, title: string): strin
 }
 
 /**
- * AgentSession Durable Object — Stateful Agent Execution Engine
+ * AgentSession Durable Object
  */
 export class AgentSession extends DurableObject {
   private messages: ReActMessage[] = [];
@@ -323,10 +348,9 @@ export class AgentSession extends DurableObject {
           await sendEvent({
             type: "agent_thought",
             turn: 1,
-            thought: `Analyzing requirements for "${userPrompt}". Calling Workers AI Llama 3.3 70B...`,
+            thought: `Generating full interactive React solution for "${userPrompt}".`,
           });
 
-          // Call Cloudflare Workers AI
           let aiText = "";
           console.log(`[AI Request] Prompt: "${userPrompt}"`);
 
@@ -341,33 +365,16 @@ export class AgentSession extends DurableObject {
               });
               aiText = typeof aiRes === "string" ? aiRes : (aiRes.response || JSON.stringify(aiRes));
               console.log(`[AI Response Length]: ${aiText.length} characters`);
-              console.log(`[AI Response Preview]:\n${aiText.slice(0, 400)}...\n`);
             } catch (aiErr: any) {
               console.error("[AI Call Error]:", aiErr);
             }
           }
 
-          // Extract files with multi-format parser
           const generated = extractGeneratedFiles(aiText);
           Object.assign(this.files, generated);
 
-          // If no custom CSS was generated, set default Tailwind import
           if (!this.files["src/index.css"]) {
             this.files["src/index.css"] = `@import "tailwindcss";`;
-          }
-
-          // In case AI failed completely, provide clean fallback component
-          if (!this.files["src/App.tsx"]) {
-            this.files["src/App.tsx"] = `export default function App() {
-  return (
-    <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
-      <div className="max-w-md w-full bg-slate-900 border border-slate-800 p-8 rounded-2xl shadow-2xl text-center">
-        <h1 className="text-2xl font-bold text-amber-400 mb-2">${userPrompt}</h1>
-        <p className="text-sm text-slate-400">Component ready.</p>
-      </div>
-    </div>
-  );
-}`;
           }
 
           const fileNames = Object.keys(this.files).join("\n  - ");
@@ -383,12 +390,12 @@ export class AgentSession extends DurableObject {
 
           // Build Live Preview HTML
           this.previewHtml = buildPreviewHtml(
-            this.files["src/App.tsx"],
+            this.files["src/App.tsx"] || "export default function App() { return <div>App Loaded</div>; }",
             this.files["src/index.css"],
             userPrompt
           );
 
-          // Save state to Durable Object Transactional Storage & KV
+          // Save state to Durable Object Storage & KV
           await this.ctx.storage.put("files", this.files);
           await this.ctx.storage.put("previewHtml", this.previewHtml);
           await this.ctx.storage.put("meta", this.meta);
@@ -405,7 +412,6 @@ export class AgentSession extends DurableObject {
           actions[2].output = `$ pnpm run build\n${buildRes.stdout || "Build completed."}\n✓ Vite development server listening on port 5173\n✓ Live Web Preview forwarded successfully.`;
           await sendEvent({ actions: [...actions] });
 
-          // Send preview update notification
           const previewUrl = `/api/sandbox/render-preview?sessionId=${encodeURIComponent(sessionId)}`;
           await sendEvent({
             type: "preview_ready",
@@ -477,7 +483,6 @@ export default {
       return env.AGENT_SESSION.get(id);
     };
 
-    // 1. Live ReAct Agent Stream
     if (
       (url.pathname === "/api/agent/stream" || url.pathname === "/api/agent/react-stream") &&
       request.method === "POST"
@@ -510,14 +515,12 @@ export default {
       return stub.fetch(new Request("https://session-do/stream", request));
     }
 
-    // 2. Code Tree
     if (url.pathname === "/api/sandbox/tree") {
       const sessionId = url.searchParams.get("sessionId") || "sovereign-session-default";
       const stub = getSessionStub(sessionId);
       return stub.fetch(new Request("https://session-do/tree", request));
     }
 
-    // 3. Code File Reader
     if (url.pathname === "/api/sandbox/file" && request.method === "POST") {
       const body = (await request.clone().json()) as { sessionId?: string };
       const sessionId = body.sessionId || "sovereign-session-default";
@@ -525,21 +528,18 @@ export default {
       return stub.fetch(new Request("https://session-do/file", request));
     }
 
-    // 4. Render Live Preview
     if (url.pathname === "/api/sandbox/render-preview") {
       const sessionId = url.searchParams.get("sessionId") || "sovereign-session-default";
       const stub = getSessionStub(sessionId);
       return stub.fetch(new Request("https://session-do/render-preview", request));
     }
 
-    // 5. Preview URL Endpoint
     if (url.pathname === "/api/sandbox/preview-url") {
       const sessionId = url.searchParams.get("sessionId") || "sovereign-session-default";
       const previewUrl = `${url.origin}/api/sandbox/render-preview?sessionId=${encodeURIComponent(sessionId)}`;
       return Response.json({ previewUrl, isListening: true, status: "running", port: 5173 }, { headers: corsHeaders });
     }
 
-    // 6. Sidebar Sessions Index
     if (url.pathname === "/api/sessions" && request.method === "GET") {
       let sessionList: SessionMeta[] = [];
       if (env.SOVEREIGN_KV) {
@@ -553,7 +553,6 @@ export default {
       return Response.json({ sessions: sessionList }, { headers: corsHeaders });
     }
 
-    // 7. Direct DO Proxy
     if (url.pathname.startsWith("/api/session/")) {
       const parts = url.pathname.split("/");
       const sessionId = parts[3] || "sovereign-session-default";
@@ -562,7 +561,6 @@ export default {
       return stub.fetch(new Request(`https://session-do/${subPath}`, request));
     }
 
-    // 8. Static Frontend Assets
     if (env.ASSETS) {
       const assetResponse = await env.ASSETS.fetch(request);
       if (assetResponse.status !== 404) {
