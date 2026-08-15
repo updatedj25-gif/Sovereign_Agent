@@ -24,18 +24,24 @@ Sovereign_Agent/
 
 ## 1. Prerequisites & Environment Setup
 
-- **Node.js**: v20.x or higher
-- **pnpm**: v9.x or higher (`corepack enable pnpm`)
+- **Node.js**: v24.x (the CI and deployment workflows use the same runtime)
+- **pnpm**: v10.x (`corepack enable pnpm`)
 - **Cloudflare Account**: Authenticated via `npx wrangler login`
 
 ### Required Environment Variables
-Ensure the following variables are configured in `.env` or passed via Cloudflare secrets:
+For local Wrangler commands, authenticate with `npx wrangler login` or set these
+environment variables. For GitHub Actions, add the same two values as repository
+secrets named exactly `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`:
 
 ```env
 GEMINI_API_KEY=your_gemini_api_key
 CLOUDFLARE_ACCOUNT_ID=your_cf_account_id
 CLOUDFLARE_API_TOKEN=your_cf_api_token
 ```
+
+`CLOUDFLARE_API_TOKEN` must be an active Cloudflare API token with permission to
+edit Workers. An API key (`CLOUDFLARE_API_KEY`) is a different credential type
+and cannot be used as the Wrangler token without the matching account email.
 
 ---
 
@@ -58,12 +64,18 @@ pnpm --prefix artifacts/sovereign-agent test
 
 ## 3. Cloudflare Worker & Durable Object Deployment
 
-Deploy backend Workers to Cloudflare using Wrangler flags:
+Deploy backend Workers to Cloudflare using Wrangler flags. The configs use
+isolated names (`sovereign-agent-replit` and `sovereign-agent-api-replit`) so
+this repository cannot overwrite the existing production Workers with the
+same product names.
 
 ### Deploy Main Durable Object Worker (`sovereign-agent`)
 
 ```bash
 cd workers
+
+# Validate the token and account before deploying
+npx wrangler whoami
 
 # Deploy main orchestrator worker with nodejs_compat compatibility flag
 npx wrangler deploy --config wrangler.toml
@@ -74,7 +86,7 @@ npx wrangler deploy --config wrangler.toml
 ```bash
 cd workers
 
-# Deploy API router worker
+# Deploy API router worker (this worker has no Durable Object migrations)
 npx wrangler deploy --config wrangler.api.toml
 ```
 
@@ -97,8 +109,8 @@ After deploying, verify endpoint health:
 
 ```bash
 # Health check HTTP GET request
-curl -i https://sovereign-agent-api.trinityceo717.workers.dev/api/health
+curl -i https://sovereign-agent-api-replit.<your-subdomain>.workers.dev/api/health
 
 # Validate SSE stream handshake
-curl -N https://sovereign-agent.trinityceo717.workers.dev/api/session/sovereign-session-default/stream
+curl -N https://sovereign-agent-replit.<your-subdomain>.workers.dev/api/session/sovereign-session-default/stream
 ```
