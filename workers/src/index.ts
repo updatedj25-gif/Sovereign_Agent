@@ -51,9 +51,8 @@ ls -la
 </execute_command>
 
 RULES:
-- When asked to clone a repository, run "git clone <url> ." or "git clone <url>".
-- When building UI, write modern React 19 + Tailwind CSS into src/App.tsx.
-- You can execute multiple tools in sequence across turns.
+- When asked to clone a repository, clone it and inspect the files.
+- When creating UI components, provide complete React 19 + Tailwind CSS code in src/App.tsx.
 - Provide a clear, helpful final response when finished.`;
 
 function sanitizeForLivePreview(rawCode: string): string {
@@ -182,7 +181,7 @@ export class AgentSession extends DurableObject {
         try {
           return await Sandbox.connect(this.e2bSandboxId, { apiKey });
         } catch {
-          console.log("[E2B] Previous sandbox expired, creating new instance...");
+          console.log("[E2B] Reconnecting to sandbox...");
         }
       }
 
@@ -192,7 +191,7 @@ export class AgentSession extends DurableObject {
       console.log(`[E2B] Sandbox created: ${this.e2bSandboxId}`);
       return sbx;
     } catch (err: any) {
-      console.error("[E2B Sandbox Error]:", err.message);
+      console.error("[E2B Error]:", err.message);
       return null;
     }
   }
@@ -201,7 +200,7 @@ export class AgentSession extends DurableObject {
     const sbx = await this.getSandboxInstance();
     if (sbx) {
       try {
-        console.log(`[E2B Executing in VM ${sbx.sandboxId}]: $ ${cmd}`);
+        console.log(`[E2B VM ${sbx.sandboxId}]: $ ${cmd}`);
         const result = await sbx.commands.run(cmd);
         return {
           stdout: result.stdout || "",
@@ -213,7 +212,6 @@ export class AgentSession extends DurableObject {
         return { stdout: "", stderr: err.message, exitCode: 1, mode: "E2B Error" };
       }
     }
-
     return { stdout: `[Virtual DO] Executed: ${cmd}`, stderr: "", exitCode: 0, mode: "Virtual DO" };
   }
 
@@ -230,18 +228,36 @@ export class AgentSession extends DurableObject {
   }
 
   public async readFile(path: string): Promise<string> {
-    if (this.files[path]) return this.files[path];
     const sbx = await this.getSandboxInstance();
     if (sbx) {
       try {
-        const content = await sbx.files.read(path);
-        if (content) {
-          this.files[path] = content;
-          return content;
+        const catRes = await this.runCommand(`cat "${path}"`);
+        if (catRes.exitCode === 0 && catRes.stdout) {
+          this.files[path] = catRes.stdout;
+          return catRes.stdout;
         }
       } catch {}
     }
-    return "";
+    return this.files[path] || "";
+  }
+
+  /**
+   * Recursively scans VM for real project files
+   */
+  public async refreshFilesFromVM(): Promise<void> {
+    const findRes = await this.runCommand(
+      "find . -maxdepth 4 -type f -not -path '*/.*' -not -path '*node_modules*' -not -path '*/dist/*' -not -name '.bash*' -not -name '.profile'"
+    );
+
+    if (findRes.exitCode === 0 && findRes.stdout) {
+      const paths = findRes.stdout.split("\n").filter((p) => p.trim() && p !== ".");
+      for (const rawPath of paths) {
+        const cleanPath = rawPath.replace(/^\.\//, "");
+        if (!this.files[cleanPath]) {
+          this.files[cleanPath] = "// synchronized from VM";
+        }
+      }
+    }
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -258,27 +274,34 @@ export class AgentSession extends DurableObject {
       return Response.json({ meta: this.meta, messages: this.messages }, { headers: corsHeaders });
     }
 
+    // 1. Recursive File Explorer Tree
     if (url.pathname.endsWith("/tree") && request.method === "GET") {
-      const sbx = await this.getSandboxInstance();
-      if (sbx) {
-        try {
-          const list = await sbx.files.list(".");
-          for (const item of list) {
-            if (!this.files[item.name]) {
-              this.files[item.name] = "// synced from VM";
-            }
-          }
-        } catch {}
-      }
+      await this.refreshFilesFromVM();
 
-      let fileList = Object.keys(this.files).map((p) => ({
+      // Filter out hidden dotfiles and map to file tree
+      const filteredKeys = Object.keys(this.files).filter(
+        (p) => !p.startsWith(".") && !p.includes("/.") && p !== ".bashrc" && p !== ".profile" && p !== ".bash_logout"
+      );
+
+      let fileList = filteredKeys.map((p) => ({
         name: p.split("/").pop() || p,
         path: p,
         type: "file",
       }));
+
+      if (fileList.length === 0) {
+        fileList = [
+          { name: "App.tsx", path: "src/App.tsx", type: "file" },
+          { name: "index.css", path: "src/index.css", type: "file" },
+          { name: "index.html", path: "index.html", type: "file" },
+          { name: "package.json", path: "package.json", type: "file" },
+        ];
+      }
+
       return Response.json({ tree: fileList }, { headers: corsHeaders });
     }
 
+    // 2. File Content Reader
     if (url.pathname.endsWith("/file") && request.method === "POST") {
       const body = (await request.json()) as { filePath?: string };
       const path = body.filePath || "src/App.tsx";
@@ -286,9 +309,10 @@ export class AgentSession extends DurableObject {
       return Response.json({ content: content || "// File empty" }, { headers: corsHeaders });
     }
 
+    // 3. Terminal Exec
     if (url.pathname.endsWith("/exec") && request.method === "POST") {
       const body = (await request.json()) as { command?: string; cmd?: string };
-      const cmd = body.command || body.cmd || "uname -a && node -v";
+      const cmd = body.command || body.cmd || "ls -la";
       const result = await this.runCommand(cmd);
       return Response.json(
         {
@@ -302,12 +326,13 @@ export class AgentSession extends DurableObject {
       );
     }
 
+    // 4. Render Live Preview
     if (url.pathname.endsWith("/render-preview")) {
       const html = this.previewHtml || buildPreviewHtml(this.files["src/App.tsx"] || "", this.files["src/index.css"] || "", "Live Preview");
       return new Response(html, { headers: { "Content-Type": "text/html; charset=UTF-8", ...corsHeaders } });
     }
 
-    // DYNAMIC MULTI-TURN REACT STREAM
+    // 5. Dynamic ReAct Stream
     if (url.pathname.endsWith("/stream") && request.method === "POST") {
       const body = (await request.json()) as { prompt?: string; sessionId?: string };
       const userPrompt = body.prompt || "Run task";
@@ -368,7 +393,7 @@ export class AgentSession extends DurableObject {
 
             let hasTools = false;
 
-            // 1. Execute Commands
+            // Execute Commands
             let cmdMatch;
             while ((cmdMatch = cmdRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
@@ -395,7 +420,7 @@ export class AgentSession extends DurableObject {
               conversationMessages.push({ role: "user", content: `Command Output:\n${fullLog}` });
             }
 
-            // 2. Write Files
+            // Write Files
             let writeMatch;
             while ((writeMatch = writeRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
@@ -421,7 +446,7 @@ export class AgentSession extends DurableObject {
               conversationMessages.push({ role: "user", content: `File ${filePath} written successfully.` });
             }
 
-            // 3. Read Files
+            // Read Files
             let readMatch;
             while ((readMatch = readRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
@@ -469,8 +494,24 @@ export class AgentSession extends DurableObject {
             }
           }
 
-          const appCode = await this.readFile("src/App.tsx");
-          const customCss = await this.readFile("src/index.css");
+          // Scan VM and update File Explorer Tree
+          await this.refreshFilesFromVM();
+
+          // Auto-detect App.tsx anywhere in workspace (root or cloned repos)
+          let appCode = await this.readFile("src/App.tsx");
+          if (!appCode) {
+            const possibleAppPaths = Object.keys(this.files).filter((p) => p.endsWith("App.tsx") || p.endsWith("App.jsx"));
+            if (possibleAppPaths.length > 0) {
+              appCode = await this.readFile(possibleAppPaths[0]);
+            }
+          }
+
+          let customCss = await this.readFile("src/index.css");
+          if (!customCss) {
+            const possibleCss = Object.keys(this.files).filter((p) => p.endsWith("index.css") || p.endsWith("App.css"));
+            if (possibleCss.length > 0) customCss = await this.readFile(possibleCss[0]);
+          }
+
           if (appCode) {
             this.previewHtml = buildPreviewHtml(appCode, customCss, userPrompt);
           }
