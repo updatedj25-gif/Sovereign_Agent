@@ -15,7 +15,8 @@
     "start": "node dist/server.cjs",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "sync:github": "tsx scripts/sync-github.ts"
+    "sync:github": "tsx scripts/sync-github.ts",
+    "build:frontend": "vite build"
   },
   "dependencies": {
     "@e2b/code-interpreter": "^2.7.0",
