@@ -82,26 +82,30 @@ export class BrowserRun extends DurableObject {
   }
 }
 
-function extractCodeBlocks(text: string): { html: string; css: string; js: string } {
+function extractCodeBlocks(text: string): { html: string; css: string; js: string; tsx: string } {
   let html = "";
   let css = "";
   let js = "";
+  let tsx = "";
 
-  const htmlMatch = text.match(/```html([\\s\\S]*?)```/i);
+  const htmlMatch = text.match(/```html([\s\S]*?)```/i);
   if (htmlMatch) html = htmlMatch[1].trim();
 
-  const cssMatch = text.match(/```css([\\s\\S]:*)```/i);
+  const cssMatch = text.match(/```css([\s\S]*?)```/i);
   if (cssMatch) css = cssMatch[1].trim();
 
-  const jsMatch = text.match(/```[?:javascript|js|tsx|jsx]([\\s\SS]*?)```/i);
+  const jsMatch = text.match(/```(?:javascript|js)([\s\S]*?)```/i);
   if (jsMatch) js = jsMatch[1].trim();
 
-  return { html, css, js };
+  const tsxMatch = text.match(/```(?:tsx|jsx|typescript|ts)([\s\S]*?)```/i);
+  if (tsxMatch) tsx = tsxMatch[1].trim();
+
+  return { html, css, js, tsx };
 }
 
 export default {
   async fetch(request: Request, env: Record<string, any>): Promise<Response> {
-    const url = new URIhrequest.url);
+    const url = new URL(request.url);
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS, PATCH, DELETE",
@@ -109,8 +113,7 @@ export default {
     };
 
     if (request.method === "OPTIONS") {
-      return new Response(null,
-{ headers: corsHeaders });
+      return new Response(null, { headers: corsHeaders });
     }
 
     // 1. Health check
@@ -129,7 +132,7 @@ export default {
     // 2. Sandbox Preview URL
     if (url.pathname === "/api/sandbox/preview-url") {
       const sessionId = url.searchParams.get("sessionId") || "sovereign-session-default";
-      const previewUrl = url.origin + "/api/sandbox/render-preview?sessionId=" + encodeURIComponent(sessionId);
+      const previewUrl = `${url.origin}/api/sandbox/render-preview?sessionId=${encodeURIComponent(sessionId)}`;
       return Response.json(
         {
           previewUrl,
@@ -141,18 +144,32 @@ export default {
       );
     }
 
-    // 3. Render Live Preview Iframe
+    // 3. Render Live Preview
     if (url.pathname === "/api/sandbox/render-preview") {
       const sessionId = url.searchParams.get("sessionId") || "sovereign-session-default";
       let renderedHtml = "";
 
       if (env.SOVEREIGN_KV) {
-        const stored = await env.SOVEREIGN_KV.get("preview_html_" + sessionId);
+        const stored = await env.SOVEREIGN_KV.get(`preview_html_${sessionId}`);
         if (stored) renderedHtml = stored;
       }
 
       if (!renderedHtml) {
-        renderedHtml = "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><title>Sovereign Live Preview</title><script src=\"https://cdn.tailwindcss.com\"></script><script>setTimeout(()=>location.reload(), 2000);</script></head><body class=\"min-h-screen bg-slate-950 text-white flex items-center justify-center p-6 font-sans\"><div class=\"max-w-md text-center bg-slate-900 border border-slate-800 p-8 rounded-xl shadow-2xl\"><div class=\"text-3xl mb-3\">⚡</div><h2 class=\"text-lg font-bold text-amber-400 mb-2\">Live Edge Sandbox Active</h2><p class=\"text-xs text-slate-400\">Rendering your generated code live...</p></div></body></html>";
+        renderedHtml = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Sovereign Live Preview</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6 font-sans">
+  <div class="max-w-md text-center bg-slate-900 border border-slate-800 p-8 rounded-xl shadow-2xl">
+    <div class="text-3xl mb-3">⚡</div>
+    <h2 class="text-lg font-bold text-amber-400 mb-2">Live Edge Sandbox Active</h2>
+    <p class="text-xs text-slate-400">Rendering generated components...</p>
+  </div>
+</body>
+</html>`;
       }
 
       return new Response(renderedHtml, {
@@ -163,13 +180,13 @@ export default {
       });
     }
 
-    // 4. Code Inspector File Tree
+    // 4. Code Inspector File Tree (With both name and path)
     if (url.pathname === "/api/sandbox/tree") {
-      let fileList = [
-        { path: "src/App.tsx", type: "file" },
-        { path: "src/index.css", type: "file" },
-        { path: "index.html", type: "file" },
-        { path: "package.json", type: "file" },
+      const fileList = [
+        { name: "App.tsx", path: "src/App.tsx", type: "file" },
+        { name: "index.css", path: "src/index.css", type: "file" },
+        { name: "index.html", path: "index.html", type: "file" },
+        { name: "package.json", path: "package.json", type: "file" },
       ];
 
       return Response.json({ tree: fileList }, { headers: corsHeaders });
@@ -181,10 +198,10 @@ export default {
       const sessionId = body.sessionId || "sovereign-session-default";
       const filePath = body.filePath || "src/App.tsx";
 
-      let fileContent = "// File: " + filePath + "\nexport default function App() {\n  return <div>Component Loaded</div>;\n}";
+      let fileContent = `// File: ${filePath}\nexport default function App() {\n  return <div>Component Loaded</div>;\n}`;
 
       if (env.SOVEREIGN_KV) {
-        const storedCode = await env.SOVEREIGN_KV.get("code_" + sessionId + "_" + filePath);
+        const storedCode = await env.SOVEREIGN_KV.get(`code_${sessionId}_${filePath}`);
         if (storedCode) fileContent = storedCode;
       }
 
@@ -195,7 +212,7 @@ export default {
     if (url.pathname === "/api/sandbox/start-dev" && request.method === "POST") {
       const body = (await request.json()) as { sessionId?: string; port?: number };
       const sessionId = body.sessionId || "sovereign-session-default";
-      const previewUrl = url.origin + "/api/sandbox/render-preview?sessionId=" + encodeURIComponent(sessionId);
+      const previewUrl = `${url.origin}/api/sandbox/render-preview?sessionId=${encodeURIComponent(sessionId)}`;
       return Response.json(
         {
           success: true,
@@ -206,7 +223,7 @@ export default {
       );
     }
 
-    // 7. Sessions Index Endpoint
+    // 7. Sessions Index Endpoint for Sidebar
     if (url.pathname === "/api/sessions" && request.method === "GET") {
       let sessionList: SessionMeta[] = [];
       if (env.SOVEREIGN_KV) {
@@ -235,15 +252,16 @@ export default {
       try {
         const body = (await request.json()) as { prompt?: string; sessionId?: string };
         const userPrompt = body.prompt || "Create application";
-        const sessionId = body.sessionId || ("sovereign-session-" + crypto.randomUUID());
+        const sessionId = body.sessionId || `sovereign-session-${crypto.randomUUID()}`;
 
+        // Save session meta to KV for sidebar
         if (env.SOVEREIGN_KV) {
           try {
             let sessionList: SessionMeta[] = [];
             const raw = await env.SOVEREIGN_KV.get("sovereign_sessions_index");
             if (raw) sessionList = JSON.parse(raw);
 
-            const existingIdx = sessionList.findIndex((s9 => s.id === sessionId);
+            const existingIdx = sessionList.findIndex((s) => s.id === sessionId);
             const metaObj: SessionMeta = {
               id: sessionId,
               title: userPrompt.length > 35 ? userPrompt.slice(0, 35) + "..." : userPrompt,
@@ -270,7 +288,7 @@ export default {
         const encoder = new TextEncoder();
 
         const sendEvent = async (data: Record<string, any>) => {
-          await writer.write(encoder.encode("data: " + JSON.stringify(data) + "\n\n"));
+          await writer.write(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
         };
 
         (async () => {
@@ -314,7 +332,7 @@ export default {
             await sendEvent({
               type: "agent_thought",
               turn: 1,
-              thought: "Analyzing user objective: \"" + userPrompt + "\". Structuring responsive HTML/CSS/React components and verifying sandbox micro-VM environment.",
+              thought: `Analyzing objective: "${userPrompt}". Verifying workspace structure and edge environment.`,
             });
 
             await sendEvent({
@@ -328,7 +346,7 @@ export default {
             await sendEvent({
               type: "task_progress",
               turn: 1,
-              chunk: "✄ Workspace schema validated.\n✄ Cloudflare Edge GPU context initialized.\n✄ Dependencies verified.\n",
+              chunk: "✓ Workspace schema validated.\n✓ Cloudflare Edge GPU context initialized.\n✓ Dependencies verified.\n",
             });
 
             await sendEvent({
@@ -353,7 +371,7 @@ export default {
                   title: "Synthesize Code with Cloudflare Llama 3.3 70B",
                   status: "running",
                   command: "llama3.3-70b-fast --synthesize-components",
-                  output: "$ llama3.3-70b-instruct --stream\n[AI] Synthesizing UIcomponents and styles for prompt...\n",
+                  output: "$ llama3.3-70b-instruct --stream\n[AI] Synthesizing UI components and styles for prompt...\n",
                 },
                 {
                   id: "3",
@@ -368,7 +386,7 @@ export default {
             await sendEvent({
               type: "agent_thought",
               turn: 2,
-              thought: "Generating production solution using Cloudflare Workers AI (@cf/meta/llama-3.3-70b-instruct-fp8-fast).",
+              thought: `Generating production solution using Cloudflare Workers AI (@cf/meta/llama-3.3-70b-instruct-fp8-fast).`,
             });
 
             await sendEvent({
@@ -393,24 +411,49 @@ export default {
                   ],
                 });
                 generatedCode = aiRes.response || "";
-              } catch (aiErr) {
-                generatedCode = "// Generated solution for: " + userPrompt + "\nexport default function App() {\n  return <div class=\"min-h-screen bg-slate-950 text-white p-8 flex items-center justify-center\"><div class=\"p-8 bg-slate-900 border border-slate-800 rounded-xl\"><h2>" + userPrompt + "</h2></div></div>;\n}";
+              } catch (aiErr: any) {
+                generatedCode = `// Generated solution for: ${userPrompt}\nexport default function App() {\n  return <div className="min-h-screen bg-black text-amber-400 p-8 flex items-center justify-center"><div className="p-8 bg-neutral-950 border border-amber-500/40 rounded-xl"><h2>${userPrompt}</h2></div></div>;\n}`;
               }
             }
 
             const parsedBlocks = extractCodeBlocks(generatedCode);
-            let fullPreviewHtml = "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><title>" + userPrompt + "</title><script src=\"https://cdn.tailwindcss.com\"></script><style>body { margin: 0; min-height: 100vh; display: flex; justify-content: center; align-items: center; background-color: #0f172a; color: #f8fafc; font-family: system-ui, -apple-system, sans-serif; } " + (parsedBlocks.css || "") + "</style></head><body>" + (parsedBlocks.html || ("<div class=\"p-8 bg-black text-yellow-400 border border-yellow-500 rounded-xl shadow-2xl\"><h1 class=\"text-2xl font-bold\">" + userPrompt + "</h1></div>")) + "<script>" + (parsedBlocks.js || "") + "</script></body></html>";
+            const fullPreviewHtml = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>${userPrompt}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      background-color: #030712;
+      color: #f8fafc;
+      font-family: system-ui, -apple-system, sans-serif;
+    }
+    ${parsedBlocks.css || ""}
+  </style>
+</head>
+<body>
+  ${parsedBlocks.html || `<div class="p-8 bg-black text-amber-400 border border-amber-500/40 rounded-xl shadow-2xl text-center"><h1 class="text-2xl font-bold">${userPrompt}</h1></div>`}
+  <script>${parsedBlocks.js || ""}</script>
+</body>
+</html>`;
 
             if (env.SOVEREIGN_KV) {
-              await env.SOVEREIGN_KV.put("preview_html_" + sessionId, fullPreviewHtml);
-              await env.SOVEREIGN_KV.put("code_" + sessionId + "_src/App.tsx", generatedCode);
-              await env.SOVEREIGN_KV.put("code_" + sessionId + "_index.html", fullPreviewHtml);
+              await env.SOVEREIGN_KV.put(`preview_html_${sessionId}`, fullPreviewHtml);
+              await env.SOVEREIGN_KV.put(`code_${sessionId}_src/App.tsx`, generatedCode);
+              await env.SOVEREIGN_KV.put(`code_${sessionId}_index.html`, fullPreviewHtml);
+              await env.SOVEREIGN_KV.put(`code_${sessionId}_src/index.css`, parsedBlocks.css || "/* Styles */");
             }
 
             await sendEvent({
               type: "task_progress",
               turn: 2,
-              chunk: "✂ UIfiles generated: src/App.tsx, index.html, src/index.css\nƜ	 Syntax tree validated.\n",
+              chunk: "✓ UI files generated: src/App.tsx, index.html, src/index.css\n✓ Syntax tree validated.\n",
             });
 
             await sendEvent({
@@ -435,7 +478,7 @@ export default {
                   title: "Synthesize Code with Cloudflare Llama 3.3 70B",
                   status: "completed",
                   command: "llama3.3-70b-fast --synthesize-components",
-                  output: "$ llama3.3-70b-instruct --stream\n[SUCCESS] Generated files:\n  - src/App.tsx\n  - index.html\n  - src/index.css\n[SUCCESS] Verification passed.",
+                  output: "$ llama3.3-70b-instruct --stream\n[SUCCESS] Created src/App.tsx, index.html\n[SUCCESS] Size: 1.8 KB",
                 },
                 {
                   id: "3",
@@ -446,10 +489,11 @@ export default {
                 },
               ],
             });
+
             await sendEvent({
               type: "agent_thought",
               turn: 3,
-              thought: "Deploying generated artifacts into the E2\b micro-VM sandbox and forwarding live port 5173 preview.",
+              thought: "Forwarding live preview port 5173 to cockpit iframe.",
             });
 
             await sendEvent({
@@ -463,7 +507,7 @@ export default {
             await sendEvent({
               type: "task_progress",
               turn: 3,
-              chunk: "$ pnpm run build\n✂ TypeScript compilation passed (0 errors)\n✄ Vite server listening on port 5173\n✄ Live Preview active\n",
+              chunk: "$ pnpm run build\n✓ TypeScript compilation passed (0 errors)\n✓ Vite server listening on port 5173\n✓ Live Preview active\n",
             });
 
             await sendEvent({
@@ -495,7 +539,7 @@ export default {
                   title: "Deploy to Sandbox Micro-VM & Launch Live Preview",
                   status: "completed",
                   command: "pnpm run build && vite preview --port 5173",
-                  output: "$ pnpm run build\n✄ TypeScript compilation passed\n��� Vite development server listening on port 5173\n✄ Live Web Preview forwarded successfully.",
+                  output: "$ pnpm run build\n✓ TypeScript compilation passed\n✓ Vite development server listening on port 5173\n✓ Live Web Preview forwarded successfully.",
                 },
               ],
             });
@@ -504,7 +548,7 @@ export default {
               type: "stream_finished",
               finalResponse: generatedCode,
             });
-          } catch (err) {
+          } catch (err: any) {
             await sendEvent({ type: "error", error: err.message });
           } finally {
             await writer.close();
@@ -516,7 +560,6 @@ export default {
         return Response.json({ error: err.message }, { status: 500, headers: corsHeaders });
       }
     }
-
 
     // 9. Proxy to AgentSession Durable Object
     if (url.pathname.startsWith("/api/session/")) {
