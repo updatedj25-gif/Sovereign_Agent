@@ -26,22 +26,24 @@ export interface ActionStep {
   output: string;
 }
 
-const SYSTEM_PROMPT = `You are Sovereign Agent, an expert React 19 + Tailwind CSS software engineer.
-You are building interactive UI components that render immediately inside a live browser preview.
+const SYSTEM_PROMPT = `You are Sovereign Agent, an expert Full-Stack Software Engineer running on Cloudflare Edge + E2B Linux Micro-VM.
+Your goal is to build complete, functional, modern, and beautiful React 19 UI components styled with Tailwind CSS.
 
 RULES:
-1. Always name the main root component "App" (e.g., export default function App() { ... } or const App = () => { ... }).
-2. For modals, popups, or dialogs, make them visible by default (e.g., useState(true)) with interactive close/open buttons, form inputs, Google icons, and polished backdrop styling.
-3. Write clean, complete React code inside a single \`\`\`tsx ... \`\`\` code block.
-4. Use standard Tailwind CSS classes for styling (borders, gradients, shadows, flex/grid, transitions).`;
+1. Always name the main root component "App" (e.g. export default function App() { ... } or const App = () => { ... }).
+2. Always write complete, interactive React code with states (useState), event handlers, realistic mock data, and polished Tailwind CSS.
+3. For modals, popups, or dialogs, make them visible by default (e.g., useState(true)) with interactive close/open buttons, form inputs, Google/Apple/Github icons, and polished backdrop blur styling.
+4. Output your complete React code inside a single \`\`\`tsx ... \`\`\` code block.
+5. If custom styles are needed, output a \`\`\`css ... \`\`\` code block.
+6. Do not leave placeholder comments like "// TODO" or "// rest of code here". Write the full, working implementation.`;
 
 /**
- * Sanitizes React & TypeScript code and auto-aliases any component name to App
+ * Sanitizes React & TypeScript code for browser standalone Babel execution
  */
 function sanitizeForLivePreview(rawCode: string): string {
   let code = rawCode;
-  
-  // 1. Remove markdown fences
+
+  // 1. Remove markdown fences if still attached
   code = code.replace(/^```(?:tsx|jsx|typescript|ts|javascript|js)?\n/i, "");
   code = code.replace(/\n```$/i, "");
 
@@ -62,7 +64,12 @@ function sanitizeForLivePreview(rawCode: string): string {
   }
 
   // 5. If "App" is not defined, alias the first detected PascalCase component to App
-  if (!code.includes("function App") && !code.includes("const App") && !code.includes("let App") && !code.includes("var App")) {
+  if (
+    !code.includes("function App") &&
+    !code.includes("const App") &&
+    !code.includes("let App") &&
+    !code.includes("var App")
+  ) {
     if (declaredComponents.length > 0) {
       code += `\nconst App = typeof __defaultExport !== 'undefined' ? __defaultExport : ${declaredComponents[0]};\n`;
     }
@@ -93,14 +100,19 @@ function extractGeneratedFiles(aiText: string): Record<string, string> {
   }
 
   if (!files["src/App.tsx"] && blocks.length > 0) {
-    const appBlock = blocks.find((b) => b.includes("return") || b.includes("<") || b.includes("const") || b.includes("function")) || blocks[0];
+    const appBlock =
+      blocks.find((b) => b.includes("return") || b.includes("<") || b.includes("const") || b.includes("function")) ||
+      blocks[0];
     if (appBlock) {
       files["src/App.tsx"] = appBlock;
     }
   }
 
   // 3. Fallback: If AI returned raw code without backticks
-  if (!files["src/App.tsx"] && (aiText.includes("function") || aiText.includes("const") || aiText.includes("return"))) {
+  if (
+    !files["src/App.tsx"] &&
+    (aiText.includes("function") || aiText.includes("const") || aiText.includes("return"))
+  ) {
     files["src/App.tsx"] = aiText.trim();
   }
 
@@ -108,7 +120,7 @@ function extractGeneratedFiles(aiText: string): Record<string, string> {
 }
 
 /**
- * Builds the Standalone HTML with TypeScript preset + React 18 + Tailwind
+ * Builds the Standalone HTML with TypeScript preset + React 18 + Tailwind CDN + Lucide Icons
  */
 function buildPreviewHtml(appCode: string, rawCss: string, title: string): string {
   const sanitizedCode = sanitizeForLivePreview(appCode);
@@ -178,13 +190,14 @@ function buildPreviewHtml(appCode: string, rawCss: string, title: string): strin
 }
 
 /**
- * AgentSession Durable Object
+ * AgentSession Durable Object — Stateful Brain & E2B Execution Coordinator
  */
 export class AgentSession extends DurableObject {
   private messages: ReActMessage[] = [];
   private meta: SessionMeta | null = null;
   private files: Record<string, string> = {};
   private previewHtml: string = "";
+  private e2bSandboxId: string | null = null;
   private env: Record<string, any>;
 
   constructor(ctx: DurableObjectState, env: Record<string, any>) {
@@ -195,18 +208,74 @@ export class AgentSession extends DurableObject {
       const storedMeta = await this.ctx.storage.get<SessionMeta>("meta");
       const storedFiles = await this.ctx.storage.get<Record<string, string>>("files");
       const storedPreview = await this.ctx.storage.get<string>("previewHtml");
+      const storedSandboxId = await this.ctx.storage.get<string>("e2bSandboxId");
 
       if (storedMsgs) this.messages = storedMsgs;
       if (storedMeta) this.meta = storedMeta;
       if (storedFiles) this.files = storedFiles;
       if (storedPreview) this.previewHtml = storedPreview;
+      if (storedSandboxId) this.e2bSandboxId = storedSandboxId;
     });
   }
 
-  private async runCommand(cmd: string, sandboxId?: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-    if (this.env.E2B_API_KEY && sandboxId) {
+  /**
+   * Spawns or retrieves an existing E2B Linux Micro-VM instance
+   */
+  public async getOrCreateE2BSandbox(): Promise<string | null> {
+    if (this.e2bSandboxId) return this.e2bSandboxId;
+    if (!this.env.E2B_API_KEY) return null;
+
+    try {
+      console.log("[E2B] Spawning dedicated Linux Sandbox Micro-VM...");
+      const res = await fetch("https://api.e2b.dev/sandboxes", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${this.env.E2B_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ template: "nodejs" }),
+      });
+
+      if (res.ok) {
+        const data = (await res.json()) as any;
+        this.e2bSandboxId = data.sandboxID || data.sandboxId;
+        await this.ctx.storage.put("e2bSandboxId", this.e2bSandboxId);
+        console.log(`[E2B] Sandbox spawned successfully: ${this.e2bSandboxId}`);
+        return this.e2bSandboxId;
+      } else {
+        console.error("[E2B Spawn Failed]:", await res.text());
+      }
+    } catch (err: any) {
+      console.error("[E2B Connection Error]:", err.message);
+    }
+    return null;
+  }
+
+  /**
+   * Syncs files to the E2B Sandbox filesystem
+   */
+  public async syncFilesToE2B(sandboxId: string) {
+    for (const [filePath, content] of Object.entries(this.files)) {
+      await this.runCommand(
+        `mkdir -p $(dirname "${filePath}") && cat << 'EOF' > "${filePath}"\n${content}\nEOF`,
+        sandboxId
+      );
+    }
+  }
+
+  /**
+   * Runs a shell command inside the E2B Linux Micro-VM or Edge Virtual Runner
+   */
+  public async runCommand(
+    cmd: string,
+    sandboxId?: string
+  ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+    const activeSandboxId = sandboxId || this.e2bSandboxId;
+
+    if (this.env.E2B_API_KEY && activeSandboxId) {
       try {
-        const res = await fetch(`https://api.e2b.dev/sandboxes/${sandboxId}/commands`, {
+        console.log(`[E2B Executing in VM ${activeSandboxId}]: $ ${cmd}`);
+        const res = await fetch(`https://api.e2b.dev/sandboxes/${activeSandboxId}/commands`, {
           method: "POST",
           headers: {
             "Authorization": `Bearer ${this.env.E2B_API_KEY}`,
@@ -214,15 +283,21 @@ export class AgentSession extends DurableObject {
           },
           body: JSON.stringify({ cmd }),
         });
+
         if (res.ok) {
           const data = (await res.json()) as any;
-          return { stdout: data.stdout || "", stderr: data.stderr || "", exitCode: data.exitCode ?? 0 };
+          return {
+            stdout: data.stdout || "",
+            stderr: data.stderr || "",
+            exitCode: data.exitCode ?? 0,
+          };
         }
       } catch (err: any) {
         return { stdout: "", stderr: `E2B error: ${err.message}`, exitCode: 1 };
       }
     }
 
+    // Edge Virtual Fallback
     if (cmd.includes("build")) {
       return {
         stdout: `vite v6.2.3 building for production...\n✓ transform completed in 18ms\n✓ bundle ready: dist/index.html (0.45 kB)`,
@@ -241,14 +316,20 @@ export class AgentSession extends DurableObject {
     const url = new URL(request.url);
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS, PATCH, DELETE",
       "Access-Control-Allow-Headers": "Content-Type, Authorization",
     };
 
+    if (request.method === "OPTIONS") {
+      return new Response(null, { headers: corsHeaders });
+    }
+
+    // 1. Session History
     if (url.pathname.endsWith("/history") && request.method === "GET") {
       return Response.json({ meta: this.meta, messages: this.messages }, { headers: corsHeaders });
     }
 
+    // 2. File Explorer Tree
     if (url.pathname.endsWith("/tree") && request.method === "GET") {
       let fileList = Object.keys(this.files).map((p) => ({
         name: p.split("/").pop() || p,
@@ -267,41 +348,51 @@ export class AgentSession extends DurableObject {
       return Response.json({ tree: fileList }, { headers: corsHeaders });
     }
 
+    // 3. File Content Reader
     if (url.pathname.endsWith("/file") && request.method === "POST") {
       const body = (await request.json()) as { filePath?: string };
       const path = body.filePath || "src/App.tsx";
-      const content = this.files[path] || `// File: ${path}\nexport default function App() {\n  return <div>Component Loaded</div>;\n}`;
+      const content =
+        this.files[path] || `// File: ${path}\nexport default function App() {\n  return <div>Component Loaded</div>;\n}`;
       return Response.json({ content }, { headers: corsHeaders });
     }
 
-    if (url.pathname.endsWith("/render-preview")) {
-      const html = this.previewHtml || buildPreviewHtml(
-        `export default function App() { return <div className="min-h-screen bg-slate-950 text-amber-400 flex items-center justify-center"><h1 className="text-xl font-bold">⚡ Durable Object Sandbox Ready</h1></div>; }`,
-        "",
-        "Sovereign Live Preview"
+    // 4. Interactive Terminal Command Execution
+    if (url.pathname.endsWith("/exec") && request.method === "POST") {
+      const body = (await request.json()) as { command?: string; cmd?: string };
+      const cmd = body.command || body.cmd || "ls -la";
+      const result = await this.runCommand(cmd);
+      return Response.json(
+        {
+          command: cmd,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          exitCode: result.exitCode,
+          sandbox: this.e2bSandboxId ? `E2B VM (${this.e2bSandboxId})` : "Durable Object Sandbox",
+        },
+        { headers: corsHeaders }
       );
+    }
+
+    // 5. Render Live Preview
+    if (url.pathname.endsWith("/render-preview")) {
+      const html =
+        this.previewHtml ||
+        buildPreviewHtml(
+          `export default function App() { return <div className="min-h-screen bg-slate-950 text-amber-400 flex items-center justify-center"><h1 className="text-xl font-bold">⚡ Durable Object Sandbox Ready</h1></div>; }`,
+          "",
+          "Sovereign Live Preview"
+        );
       return new Response(html, { headers: { "Content-Type": "text/html; charset=UTF-8", ...corsHeaders } });
     }
 
-    // Stateful ReAct Execution Stream (SSE)
+    // 6. Stateful ReAct Execution Stream (SSE)
     if (url.pathname.endsWith("/stream") && request.method === "POST") {
       const body = (await request.json()) as { prompt?: string; sandboxId?: string; sessionId?: string };
       const userPrompt = body.prompt || "Build application";
-      const sandboxId = body.sandboxId || undefined;
       const sessionId = body.sessionId || "sovereign-session-default";
 
       this.messages.push({ role: "user", content: userPrompt, timestamp: new Date().toISOString() });
-      this.meta = {
-        id: sessionId,
-        title: userPrompt.length > 35 ? userPrompt.slice(0, 35) + "..." : userPrompt,
-        createdAt: this.meta?.createdAt || new Date().toISOString(),
-        lastUpdated: new Date().toISOString(),
-        credentials: {
-          aiProvider: "Cloudflare Workers AI",
-          model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-          sandbox: this.env.E2B_API_KEY ? "E2B Micro-VM" : "Durable Object Sandbox",
-        },
-      };
 
       const { readable, writable } = new TransformStream();
       const writer = writable.getWriter();
@@ -313,13 +404,30 @@ export class AgentSession extends DurableObject {
 
       (async () => {
         try {
+          // STEP 1: Provision Sandbox Micro-VM
+          const activeSandbox = await this.getOrCreateE2BSandbox();
+
+          this.meta = {
+            id: sessionId,
+            title: userPrompt.length > 35 ? userPrompt.slice(0, 35) + "..." : userPrompt,
+            createdAt: this.meta?.createdAt || new Date().toISOString(),
+            lastUpdated: new Date().toISOString(),
+            credentials: {
+              aiProvider: "Cloudflare Workers AI",
+              model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+              sandbox: activeSandbox ? `E2B Micro-VM (${activeSandbox})` : "Durable Object Sandbox",
+            },
+          };
+
           const actions: ActionStep[] = [
             {
               id: "1",
               title: "Inspect Workspace & Configure Environment",
               status: "running",
               command: "workspace_inspector --analyze",
-              output: `$ sovereign workspace inspect\n[INFO] Durable Object state loaded.\n[INFO] AI: Llama 3.3 70B FP8 Fast\n[SUCCESS] Environment ready.\n`,
+              output: `$ sovereign workspace inspect\n[INFO] Durable Object state loaded.\n[INFO] Sandbox: ${
+                activeSandbox ? `E2B Micro-VM (${activeSandbox})` : "Virtual Edge Sandbox"
+              }\n[INFO] AI: Llama 3.3 70B FP8 Fast\n[SUCCESS] Environment ready.\n`,
             },
             {
               id: "2",
@@ -351,6 +459,7 @@ export class AgentSession extends DurableObject {
             thought: `Generating full interactive React solution for "${userPrompt}".`,
           });
 
+          // STEP 2: Call Workers AI
           let aiText = "";
           console.log(`[AI Request] Prompt: "${userPrompt}"`);
 
@@ -381,12 +490,16 @@ export class AgentSession extends DurableObject {
           actions[1].status = "completed";
           actions[1].output = `$ llama3.3-70b-instruct --stream\n[SUCCESS] Generated files:\n  - ${fileNames}\n[SUCCESS] Verification passed.`;
 
-          // Step 3: Run Build & Setup Live Preview
+          // STEP 3: Sync to E2B VM & Build
           actions[2].status = "running";
           actions[2].output = `$ pnpm run build && vite preview --port 5173\nRunning build in Sandbox...\n`;
           await sendEvent({ actions: [...actions] });
 
-          const buildRes = await this.runCommand("pnpm run build", sandboxId);
+          if (activeSandbox) {
+            await this.syncFilesToE2B(activeSandbox);
+          }
+
+          const buildRes = await this.runCommand("pnpm run build", activeSandbox || undefined);
 
           // Build Live Preview HTML
           this.previewHtml = buildPreviewHtml(
@@ -395,7 +508,7 @@ export class AgentSession extends DurableObject {
             userPrompt
           );
 
-          // Save state to Durable Object Storage & KV
+          // Save state into Durable Object Storage & KV
           await this.ctx.storage.put("files", this.files);
           await this.ctx.storage.put("previewHtml", this.previewHtml);
           await this.ctx.storage.put("meta", this.meta);
@@ -451,7 +564,7 @@ export class BrowserRun extends DurableObject {
 }
 
 /**
- * Worker Main Gateway
+ * Main Cloudflare Worker Edge Gateway
  */
 export default {
   async fetch(request: Request, env: Record<string, any>): Promise<Response> {
@@ -471,7 +584,7 @@ export default {
         {
           status: "ok",
           worker: "sovereign-agent-replit",
-          architecture: "Cloudflare Workers + Durable Objects + Workers AI",
+          architecture: "Cloudflare Workers + Durable Objects + Workers AI + E2B",
           timestamp: new Date().toISOString(),
         },
         { headers: corsHeaders }
@@ -483,6 +596,7 @@ export default {
       return env.AGENT_SESSION.get(id);
     };
 
+    // 1. Live ReAct Agent Stream Handler
     if (
       (url.pathname === "/api/agent/stream" || url.pathname === "/api/agent/react-stream") &&
       request.method === "POST"
@@ -503,7 +617,7 @@ export default {
             credentials: {
               aiProvider: "Cloudflare Workers AI",
               model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-              sandbox: "Durable Object",
+              sandbox: env.E2B_API_KEY ? "E2B Linux Micro-VM" : "Durable Object Sandbox",
             },
           };
           list = [meta, ...list.filter((s) => s.id !== sessionId)].slice(0, 25);
@@ -515,12 +629,22 @@ export default {
       return stub.fetch(new Request("https://session-do/stream", request));
     }
 
+    // 2. Interactive Terminal Exec
+    if (url.pathname === "/api/sandbox/exec" && request.method === "POST") {
+      const body = (await request.clone().json()) as { sessionId?: string };
+      const sessionId = body.sessionId || "sovereign-session-default";
+      const stub = getSessionStub(sessionId);
+      return stub.fetch(new Request("https://session-do/exec", request));
+    }
+
+    // 3. Code Explorer File Tree
     if (url.pathname === "/api/sandbox/tree") {
       const sessionId = url.searchParams.get("sessionId") || "sovereign-session-default";
       const stub = getSessionStub(sessionId);
       return stub.fetch(new Request("https://session-do/tree", request));
     }
 
+    // 4. Code Explorer File Reader
     if (url.pathname === "/api/sandbox/file" && request.method === "POST") {
       const body = (await request.clone().json()) as { sessionId?: string };
       const sessionId = body.sessionId || "sovereign-session-default";
@@ -528,18 +652,24 @@ export default {
       return stub.fetch(new Request("https://session-do/file", request));
     }
 
+    // 5. Render Live Preview
     if (url.pathname === "/api/sandbox/render-preview") {
       const sessionId = url.searchParams.get("sessionId") || "sovereign-session-default";
       const stub = getSessionStub(sessionId);
       return stub.fetch(new Request("https://session-do/render-preview", request));
     }
 
+    // 6. Preview URL Endpoint
     if (url.pathname === "/api/sandbox/preview-url") {
       const sessionId = url.searchParams.get("sessionId") || "sovereign-session-default";
       const previewUrl = `${url.origin}/api/sandbox/render-preview?sessionId=${encodeURIComponent(sessionId)}`;
-      return Response.json({ previewUrl, isListening: true, status: "running", port: 5173 }, { headers: corsHeaders });
+      return Response.json(
+        { previewUrl, isListening: true, status: "running", port: 5173 },
+        { headers: corsHeaders }
+      );
     }
 
+    // 7. Sidebar Sessions Index
     if (url.pathname === "/api/sessions" && request.method === "GET") {
       let sessionList: SessionMeta[] = [];
       if (env.SOVEREIGN_KV) {
@@ -553,6 +683,7 @@ export default {
       return Response.json({ sessions: sessionList }, { headers: corsHeaders });
     }
 
+    // 8. Direct Session Durable Object proxy
     if (url.pathname.startsWith("/api/session/")) {
       const parts = url.pathname.split("/");
       const sessionId = parts[3] || "sovereign-session-default";
@@ -561,6 +692,7 @@ export default {
       return stub.fetch(new Request(`https://session-do/${subPath}`, request));
     }
 
+    // 9. Static Assets
     if (env.ASSETS) {
       const assetResponse = await env.ASSETS.fetch(request);
       if (assetResponse.status !== 404) {
