@@ -3,13 +3,58 @@ main = "src/index.ts"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 
+# 1. Static React Frontend Assets Binding
+[assets]
+directory = "../dist"
+binding = "ASSETS"
+
+# 2. Workers AI & AI Gateway Integration
+[ai]
+binding = "AI"
+
 [vars]
 ENVIRONMENT = "production"
+CLOUDFLARE_ACCOUNT_ID = "1b77c2a9725b1e4c20f52f8ecfadbb3f"
+AI_GATEWAY_URL = "https://gateway.ai.cloudflare.com/v1/1b77c2a9725b1e4c20f52f8ecfadbb3f/sovereign-ai-gateway/compat/chat/completions"
 
+# 3. Durable Objects Bindings
 [[durable_objects.bindings]]
 name = "AGENT_SESSION"
 class_name = "AgentSession"
 
+# 4. R2 Object Storage Bucket Binding (Screenshots, Diffs, Artifacts)
+[[r2_buckets]]
+binding = "STORAGE_BUCKET"
+bucket_name = "sovereign-master-bucket"
+
+# 5. Workers KV Namespace Bindings
+[[kv_namespaces]]
+binding = "SOVEREIGN_KV"
+id = "ef1462dfa55a47e3923176522cb355a6"
+
+[[kv_namespaces]]
+binding = "AGENT_CACHE"
+id = "b3301c5ec88a409d964b4303e880618b"
+
+[[kv_namespaces]]
+binding = "STORAGE_KV"
+id = "8767a3e1ac644d2e81c6f99cbf9c7259"
+
+# 6. Vectorize Index Bindings (Semantic Code & Symbol Search)
+[[vectorize]]
+binding = "VECTOR_INDEX"
+index_name = "sovereign-vector-index"
+
+[[vectorize]]
+binding = "SEARCH_INDEX"
+index_name = "sovereign-search"
+
+# 7. Cloudflare Queue Producer Binding
+[[queues.producers]]
+queue = "sovereign-lobe-queue"
+binding = "LOBE_QUEUE"
+
+# 8. Durable Object Class Migrations
 [[migrations]]
 tag = "v1"
 new_classes = ["AgentSession"]

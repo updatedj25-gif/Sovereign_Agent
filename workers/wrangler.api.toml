@@ -3,5 +3,30 @@ main = "src/api.ts"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 
+# 1. Workers AI Binding
+[ai]
+binding = "AI"
+
 [vars]
 ENVIRONMENT = "production"
+CLOUDFLARE_ACCOUNT_ID = "1b77c2a9725b1e4c20f52f8ecfadbb3f"
+AI_GATEWAY_URL = "https://gateway.ai.cloudflare.com/v1/1b77c2a9725b1e4c20f52f8ecfadbb3f/sovereign-ai-gateway/compat/chat/completions"
+
+# 2. R2 Object Storage Bucket Binding
+[[r2_buckets]]
+binding = "STORAGE_BUCKET"
+bucket_name = "sovereign-master-bucket"
+
+# 3. Workers KV Namespace Binding
+[[kv_namespaces]]
+binding = "AGENT_CACHE"
+id = "b3301c5ec88a409d964b4303e880618b"
+
+# 4. Migrations
+[[migrations]]
+tag = "v1"
+new_classes = ["AgentSession"]
+
+[[migrations]]
+tag = "v2"
+deleted_classes = ["BrowserRun"]
