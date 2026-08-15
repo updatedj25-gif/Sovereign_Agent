@@ -22,12 +22,12 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
-    // GET /api/health — API Gateway Health Check
+    // GET /api/health — Edge API Gateway Health Check
     if (url.pathname === "/api/health") {
       return Response.json(
         {
           status: "ok",
-          service: "sovereign-agent-api",
+          service: "sovereign-agent-api-replit",
           environment: env.ENVIRONMENT || "production",
           timestamp: new Date().toISOString(),
         },
@@ -59,7 +59,7 @@ export default {
     return Response.json(
       {
         status: "ok",
-        service: "sovereign-agent-api",
+        service: "sovereign-agent-api-replit",
         message: "Sovereign Agent Edge API Gateway active",
       },
       { headers: corsHeaders }
