@@ -9,3 +9,4 @@ coverage/
 cloudflare-config.json
 *.swp
 .env
+workers/repomix-output.xml
