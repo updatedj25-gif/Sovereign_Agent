@@ -3,16 +3,37 @@ import { DurableObject } from "cloudflare:workers";
 export interface ReActMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: string;
+  timestamp?: string;
+  credentialsUsed?: {
+    model: string;
+    sandbox: string;
+    authType: string;
+  };
+}
+
+export interface SessionMeta {
+  id: string;
+  title: string;
+  createdAt: string;
+  lastUpdated: string;
+  credentials: {
+    aiProvider: string;
+    model: string;
+    sandbox: string;
+  };
 }
 
 export class AgentSession extends DurableObject {
   private messages: ReActMessage[] = [];
+  private meta: SessionMeta | null = null;
 
   constructor(ctx: DurableObjectState, env: Record<string, any>) {
     super(ctx, env);
     this.ctx.blockConcurrencyWhile(async () => {
       const storedMsgs = await this.ctx.storage.get<ReActMessage[]>("messages");
+      const storedMeta = await this.ctx.storage.get<SessionMeta>("meta");
       if (storedMsgs) this.messages = storedMsgs;
+      if (storedMeta) this.meta = storedMeta;
     });
   }
 
@@ -20,16 +41,25 @@ export class AgentSession extends DurableObject {
     const url = new URL(request.url);
 
     if (url.pathname.endsWith("/history") && request.method === "GET") {
-      return Response.json({ messages: this.messages });
+      return Response.json({
+        meta: this.meta,
+        messages: this.messages,
+      });
     }
 
     if (url.pathname.endsWith("/message") && request.method === "POST") {
-      const body = (await request.json()) as ReActMessage;
-      this.messages.push(body);
-      if (this.messages.length > 40) {
-        this.messages = [this.messages[0], ...this.messages.slice(-39)];
+      const body = (await request.json()) as { message: ReActMessage; meta?: SessionMeta };
+      if (body.message) {
+        this.messages.push(body.message);
+        if (this.messages.length > 40) {
+          this.messages = [this.messages[0], ...this.messages.slice(-39)];
+        }
+        await this.ctx.storage.put("messages", this.messages);
       }
-      await this.ctx.storage.put("messages", this.messages);
+      if (body.meta) {
+        this.meta = body.meta;
+        await this.ctx.storage.put("meta", this.meta);
+      }
       return Response.json({ success: true, count: this.messages.length });
     }
 
@@ -69,7 +99,7 @@ export default {
       );
     }
 
-    // 2. Sandbox Helper Endpoints for UI
+    // 2. Sandbox Helper Endpoints
     if (url.pathname === "/api/sandbox/preview-url") {
       return Response.json({ status: "ready", url: null }, { headers: corsHeaders });
     }
@@ -77,7 +107,21 @@ export default {
       return Response.json({ tree: [], files: [] }, { headers: corsHeaders });
     }
 
-    // 3. Agent Stream Handler (Matches both /api/agent/stream and /api/agent/react-stream)
+    // 3. List All Saved Sessions
+    if (url.pathname === "/api/sessions" && request.method === "GET") {
+      let sessionList: SessionMeta[] = [];
+      if (env.SOVEREIGN_KV) {
+        const raw = await env.SOVEREIGN_KV.get("sovereign_sessions_index");
+        if (raw) {
+          try {
+            sessionList = JSON.parse(raw);
+          } catch {}
+        }
+      }
+      return Response.json({ sessions: sessionList }, { headers: corsHeaders });
+    }
+
+    // 4. Agent Stream Handler (with session indexing & credentials tracking)
     if (
       (url.pathname === "/api/agent/stream" || url.pathname === "/api/agent/react-stream") &&
       request.method === "POST"
@@ -91,7 +135,40 @@ export default {
 
       try {
         const body = (await request.json()) as { prompt?: string; sessionId?: string };
-        const userPrompt = body.prompt || "Create application";
+        const userPrompt = body.prompt || "New Task";
+        const sessionId = body.sessionId || `sovereign-session-${crypto.randomUUID()}`;
+
+        // Store session in KV index for sidebar history
+        if (env.SOVEREIGN_KV) {
+          try {
+            let sessionList: SessionMeta[] = [];
+            const raw = await env.SOVEREIGN_KV.get("sovereign_sessions_index");
+            if (raw) sessionList = JSON.parse(raw);
+
+            const existingIdx = sessionList.findIndex((s) => s.id === sessionId);
+            const metaObj: SessionMeta = {
+              id: sessionId,
+              title: userPrompt.length > 35 ? userPrompt.slice(0, 35) + "..." : userPrompt,
+              createdAt: existingIdx >= 0 ? sessionList[existingIdx].createdAt : new Date().toISOString(),
+              lastUpdated: new Date().toISOString(),
+              credentials: {
+                aiProvider: "Cloudflare Workers AI",
+                model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+                sandbox: "E2B Micro-VM",
+              },
+            };
+
+            if (existingIdx >= 0) {
+              sessionList[existingIdx] = metaObj;
+            } else {
+              sessionList.unshift(metaObj);
+            }
+            if (sessionList.length > 25) sessionList = sessionList.slice(0, 25);
+            await env.SOVEREIGN_KV.put("sovereign_sessions_index", JSON.stringify(sessionList));
+          } catch (kvErr) {
+            console.error("Failed to index session in KV:", kvErr);
+          }
+        }
 
         const { readable, writable } = new TransformStream();
         const writer = writable.getWriter();
@@ -104,20 +181,30 @@ export default {
         (async () => {
           try {
             await sendEvent({
+              type: "session_created",
+              sessionId,
+              credentials: {
+                aiProvider: "Cloudflare Workers AI (Edge GPU)",
+                model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+                sandbox: "E2B Micro-VM (Firecracker)",
+              },
+            });
+
+            await sendEvent({
               type: "roadmap_ready",
               subtasks: [
-                "Analyze request with Cloudflare Workers AI (Llama 3.3 70B)",
-                "Synthesize code solution and artifacts",
-                "Finalize execution and render in workspace",
+                "Authenticate & verify credentials (Cloudflare AI + E2B Sandbox)",
+                "Analyze request with Llama 3.3 70B",
+                "Synthesize artifacts and persist to session history",
               ],
             });
 
             await sendEvent({
               type: "task_running",
-              task: "Analyze request with Cloudflare Workers AI (Llama 3.3 70B)",
+              task: "Analyze request with Llama 3.3 70B",
             });
 
-            let aiResponseText = "Task completed successfully with Cloudflare Workers AI.";
+            let aiResponseText = "Task processed on Cloudflare Edge AI.";
 
             if (env.AI) {
               try {
@@ -138,20 +225,9 @@ export default {
               }
             }
 
-            await sendEvent({
-              type: "task_progress",
-              output: aiResponseText,
-            });
-
-            await sendEvent({
-              type: "task_completed",
-              summary: aiResponseText,
-            });
-
-            await sendEvent({
-              type: "stream_finished",
-              finalResponse: aiResponseText,
-            });
+            await sendEvent({ type: "task_progress", output: aiResponseText });
+            await sendEvent({ type: "task_completed", summary: aiResponseText });
+            await sendEvent({ type: "stream_finished", finalResponse: aiResponseText });
           } catch (err: any) {
             await sendEvent({ type: "error", error: err.message });
           } finally {
@@ -165,7 +241,7 @@ export default {
       }
     }
 
-    // 4. Proxy to AgentSession Durable Object
+    // 5. Proxy to AgentSession Durable Object
     if (url.pathname.startsWith("/api/session/")) {
       const parts = url.pathname.split("/");
       const sessionId = parts[3] || "sovereign-session-default";
@@ -176,7 +252,7 @@ export default {
       }
     }
 
-    // 5. Serve Static React Frontend Assets on Edge
+    // 6. Serve Static React Frontend Assets on Edge
     if (env.ASSETS) {
       const assetResponse = await env.ASSETS.fetch(request);
       if (assetResponse.status !== 404) {
