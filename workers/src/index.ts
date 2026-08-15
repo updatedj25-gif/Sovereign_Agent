@@ -92,7 +92,6 @@ export class AgentSession extends DurableObject {
         await writer.write(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
       };
 
-      // Stream session state initialization
       (async () => {
         if (this.pendingApproval) {
           await sendEvent({
@@ -131,17 +130,17 @@ export default {
   async fetch(request: Request, env: Record<string, any>): Promise<Response> {
     const url = new URL(request.url);
 
-    // Health check endpoint
+    // 1. Health check endpoint
     if (url.pathname === "/api/health") {
       return Response.json({
         status: "ok",
-        worker: "sovereign-agent",
-        edge: "Cloudflare Workers + Durable Objects",
+        worker: "sovereign-agent-replit",
+        edge: "Cloudflare Workers + Durable Objects + Static Assets",
         timestamp: new Date().toISOString(),
       });
     }
 
-    // Proxy requests to AgentSession Durable Object
+    // 2. Proxy requests to AgentSession Durable Object
     if (url.pathname.startsWith("/api/session/")) {
       const parts = url.pathname.split("/");
       const sessionId = parts[3] || "sovereign-session-default";
@@ -150,6 +149,14 @@ export default {
         const id = env.AGENT_SESSION.idFromName(sessionId);
         const stub = env.AGENT_SESSION.get(id);
         return stub.fetch(request);
+      }
+    }
+
+    // 3. Serve React Frontend Static Assets on Cloudflare Edge
+    if (env.ASSETS) {
+      const assetResponse = await env.ASSETS.fetch(request);
+      if (assetResponse.status !== 404) {
+        return assetResponse;
       }
     }
 

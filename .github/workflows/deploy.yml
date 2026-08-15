@@ -36,6 +36,9 @@ jobs:
       - name: Typecheck Workspace
         run: pnpm run typecheck
 
+      - name: Build React Frontend Assets
+        run: pnpm run build
+
       - name: Validate Cloudflare credentials
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
