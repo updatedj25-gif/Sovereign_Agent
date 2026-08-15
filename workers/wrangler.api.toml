@@ -1,0 +1,15 @@
+name = "sovereign-agent-api"
+main = "src/api.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ENVIRONMENT = "production"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["AgentSession"]
+
+[[migrations]]
+tag = "v2"
+deleted_classes = ["BrowserRun"]

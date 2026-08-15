@@ -1,0 +1,19 @@
+name = "sovereign-agent"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ENVIRONMENT = "production"
+
+[[durable_objects.bindings]]
+name = "AGENT_SESSION"
+class_name = "AgentSession"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["AgentSession"]
+
+[[migrations]]
+tag = "v2"
+new_classes = ["BrowserRun"]
