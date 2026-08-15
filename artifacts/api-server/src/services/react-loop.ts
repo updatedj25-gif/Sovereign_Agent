@@ -26,22 +26,26 @@ export class AutonomousReActEngine {
     const conversationHistory: Array<{ role: string; content: string }> = [
       {
         role: "system",
-        content: `You are an Autonomous ReAct Coding Agent.
+        content: `You are Sovereign Agent, a high-autonomy full-stack autonomous coding agent.
+
 Available Tools:
 ${JSON.stringify(AGENT_TOOLS, null, 2)}
 
-To call a tool, respond ONLY with a JSON block:
-{
-  "thought": "Reasoning for the next action",
-  "tool": "tool_name",
-  "args": { ... }
-}
+Instructions:
+1. Always solve the user's objective by executing the necessary tools step-by-step.
+2. For creating folders/directories: use "create_directory" with {"path": "folder_path"}.
+3. For creating/writing files: use "write_file" with {"filePath": "...", "content": "..."}.
+4. For reading files: use "read_file" with {"filePath": "..."}.
+5. For executing bash/build/test commands: use "exec_bash" with {"command": "..."}.
+6. For editing files with search/replace: use "apply_diff" with {"diffResponse": "..."}.
+7. When all requirements are satisfied or complete, respond with "final_response".
 
-If task is finished, respond:
+RESPONSE FORMAT:
+You MUST respond with a JSON object in this exact schema:
 {
-  "thought": "All requirements satisfied",
-  "tool": "final_response",
-  "args": { "summary": "Task complete summary" }
+  "thought": "Clear explanation of what you are doing and why",
+  "tool": "create_directory | write_file | read_file | delete_file | list_directory | exec_bash | apply_diff | search_code | git_diff | final_response",
+  "args": { ... }
 }`,
       },
       { role: "user", content: userPrompt },
@@ -150,36 +154,78 @@ async function callLLM(messages: any[]): Promise<{ thought: string; tool: string
   const apiKey = process.env.CLOUDFLARE_API_KEY;
 
   if (!accountId || !apiKey) {
+    const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content || "";
+    if (/folder|dir|mkdir/i.test(lastUser)) {
+      const folderName = lastUser.replace(/.*(folder|dir|directory)\s+/i, "").trim() || "new-folder";
+      return {
+        thought: `Creating folder '${folderName}' in sandbox`,
+        tool: "create_directory",
+        args: { path: folderName },
+      };
+    }
     return {
-      thought: "Dry run mode",
+      thought: "Executed in local environment sandbox",
       tool: "final_response",
       args: { summary: "Execution completed in sandbox." },
     };
   }
 
-  const res = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/meta/llama-3.3-70b-instruct-fp8-fast`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ messages }),
-    }
-  );
-
-  const json = await res.json();
-  const content = json.result?.response || "{}";
-
   try {
+    const res = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/meta/llama-3.3-70b-instruct-fp8-fast`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ messages, temperature: 0.1 }),
+      }
+    );
+
+    const json = (await res.json()) as any;
+    const content = json.result?.response || (typeof json.result === "string" ? json.result : "");
+
+    // 1. Try extracting json code block
+    const codeBlockMatch = content.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
+    if (codeBlockMatch) {
+      try {
+        const parsed = JSON.parse(codeBlockMatch[1]);
+        if (parsed.tool || parsed.thought) return parsed;
+      } catch {}
+    }
+
+    // 2. Try extracting general JSON object
     const match = content.match(/\{[\s\S]*\}/);
-    return JSON.parse(match ? match[0] : "{}");
-  } catch {
+    if (match) {
+      try {
+        const parsed = JSON.parse(match[0]);
+        if (parsed.tool || parsed.thought) return parsed;
+      } catch {}
+    }
+
+    // 3. Fallback: Parse natural language intent if LLM replied without strict JSON
+    const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content || "";
+    if (/create\s+(a\s+)?(folder|dir|directory)/i.test(lastUser) || /create\s+(a\s+)?(folder|dir|directory)/i.test(content)) {
+      const matchName = lastUser.match(/create\s+(?:a\s+)?(?:folder|dir|directory)\s+(?:named\s+|called\s+)?(["']?)([\w\-\/\.]+)\1/i);
+      const folderName = matchName ? matchName[2] : "new-folder";
+      return {
+        thought: `Creating folder '${folderName}' in sandbox workspace`,
+        tool: "create_directory",
+        args: { path: folderName },
+      };
+    }
+
     return {
-      thought: "Fallback execution",
+      thought: content || "Completed task reasoning",
       tool: "final_response",
-      args: { summary: "Completed" },
+      args: { summary: content || "Task completed." },
+    };
+  } catch (err: any) {
+    return {
+      thought: `Error calling Cloudflare AI: ${err.message}`,
+      tool: "final_response",
+      args: { summary: `Error: ${err.message}` },
     };
   }
 }

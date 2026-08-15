@@ -15,15 +15,26 @@ export interface ToolDefinition {
 
 export const AGENT_TOOLS: ToolDefinition[] = [
   {
-    name: "exec_bash",
-    description: "Executes shell commands inside the E2B Linux sandbox (e.g., pnpm test, npx tsc --noEmit, npm run build).",
+    name: "create_directory",
+    description: "Creates a new folder / directory (and parent directories) in the workspace.",
     parameters: {
       type: "object",
       properties: {
-        command: { type: "string", description: "The shell command to run." },
-        cwd: { type: "string", description: "Working directory (default: /home/user/workspace)" },
+        path: { type: "string", description: "Relative directory path to create (e.g. src/components/ui)" },
       },
-      required: ["command"],
+      required: ["path"],
+    },
+  },
+  {
+    name: "write_file",
+    description: "Creates or overwrites a file with given text content.",
+    parameters: {
+      type: "object",
+      properties: {
+        filePath: { type: "string", description: "Relative file path (e.g. src/index.ts)" },
+        content: { type: "string", description: "Full text content to write." },
+      },
+      required: ["filePath", "content"],
     },
   },
   {
@@ -35,6 +46,39 @@ export const AGENT_TOOLS: ToolDefinition[] = [
         filePath: { type: "string", description: "Relative file path (e.g. src/index.ts)" },
       },
       required: ["filePath"],
+    },
+  },
+  {
+    name: "delete_file",
+    description: "Deletes a file or directory from the workspace.",
+    parameters: {
+      type: "object",
+      properties: {
+        filePath: { type: "string", description: "Relative file or directory path to delete" },
+      },
+      required: ["filePath"],
+    },
+  },
+  {
+    name: "list_directory",
+    description: "Lists files and subdirectories in a directory.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Directory path relative to workspace (defaults to '.')" },
+      },
+    },
+  },
+  {
+    name: "exec_bash",
+    description: "Executes shell commands inside the E2B Linux sandbox (e.g., pnpm test, npx tsc --noEmit, npm run build).",
+    parameters: {
+      type: "object",
+      properties: {
+        command: { type: "string", description: "The shell command to run." },
+        cwd: { type: "string", description: "Working directory (default: /home/user/workspace)" },
+      },
+      required: ["command"],
     },
   },
   {
@@ -79,16 +123,58 @@ export class ToolExecutionHandler {
   ): Promise<{ success: boolean; output: string }> {
     try {
       switch (toolName) {
+        case "create_directory": {
+          const dirPath = args.path || args.dirPath || args.filePath || "";
+          const res = await E2BSandboxManager.executeCommand(
+            sessionId,
+            `mkdir -p "${dirPath}"`,
+            "/home/user/workspace"
+          );
+          return {
+            success: res.exitCode === 0,
+            output: res.exitCode === 0 ? `Directory '${dirPath}' created successfully.` : res.stderr,
+          };
+        }
+
+        case "write_file": {
+          const targetPath = args.filePath || args.path || "";
+          await E2BSandboxManager.writeFile(sessionId, targetPath, args.content || "");
+          return { success: true, output: `File '${targetPath}' written successfully.` };
+        }
+
+        case "read_file": {
+          const content = await E2BSandboxManager.readFile(sessionId, args.filePath || args.path);
+          return { success: true, output: content };
+        }
+
+        case "delete_file": {
+          const target = args.filePath || args.path || "";
+          const res = await E2BSandboxManager.executeCommand(
+            sessionId,
+            `rm -rf "${target}"`,
+            "/home/user/workspace"
+          );
+          return {
+            success: res.exitCode === 0,
+            output: res.exitCode === 0 ? `Deleted '${target}' successfully.` : res.stderr,
+          };
+        }
+
+        case "list_directory": {
+          const target = args.path || ".";
+          const res = await E2BSandboxManager.executeCommand(
+            sessionId,
+            `ls -la "${target}"`,
+            "/home/user/workspace"
+          );
+          return { success: res.exitCode === 0, output: res.stdout || res.stderr };
+        }
+
         case "exec_bash": {
           const res = await E2BSandboxManager.executeCommand(sessionId, args.command, args.cwd);
           const success = res.exitCode === 0;
           const output = `Exit Code: ${res.exitCode}\nSTDOUT:\n${res.stdout}\nSTDERR:\n${res.stderr}`;
           return { success, output };
-        }
-
-        case "read_file": {
-          const content = await E2BSandboxManager.readFile(sessionId, args.filePath);
-          return { success: true, output: content };
         }
 
         case "apply_diff": {

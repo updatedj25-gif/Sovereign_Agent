@@ -36,11 +36,21 @@ export class ToolRegistry {
   }
 
   getToolsJsonSchema(): any[] {
-    return Array.from(this.tools.values()).map((t) => ({
-      name: t.name,
-      description: t.description,
-      parameters: t.parameters,
-    }));
+    return Array.from(this.tools.values()).map((t) => {
+      let params = t.parameters;
+      // If parameters is not a standard JSON schema object, provide a clean fallback
+      if (!params || typeof params !== "object" || !params.type) {
+        params = { type: "object", properties: {} };
+      }
+      return {
+        type: "function",
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: params,
+        },
+      };
+    });
   }
 
   getToolDefinitions(): ToolDefinition[] {
@@ -52,14 +62,25 @@ export class ToolRegistry {
     args: any,
     context?: ToolExecutionContext
   ): Promise<ToolExecutionResult> {
+    let parsedArgs = args;
+    if (typeof args === "string") {
+      try {
+        parsedArgs = JSON.parse(args);
+      } catch {
+        parsedArgs = { raw: args };
+      }
+    } else if (!args || typeof args !== "object") {
+      parsedArgs = {};
+    }
+
     const tool = this.getTool(name);
     if (tool && typeof tool.execute === "function") {
-      return await tool.execute(args, context);
+      return await tool.execute(parsedArgs, context);
     }
 
     return {
       success: true,
-      output: `Executed tool '${name}' with args: ${JSON.stringify(args)}`,
+      output: `Executed tool '${name}' with args: ${JSON.stringify(parsedArgs)}`,
       data: { exitCode: 0 },
       metadata: { exitCode: 0 },
     };

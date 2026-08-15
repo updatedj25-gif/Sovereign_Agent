@@ -30,6 +30,8 @@ export function SplitChatView({
   const [inputText, setInputText] = useState("");
   const [activePane, setActivePane] = useState<"preview" | "code" | "terminal">("preview");
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [isPortListening, setIsPortListening] = useState(false);
+  const [startingDev, setStartingDev] = useState(false);
   const [tree, setTree] = useState<FileNode[]>([]);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string | null>(null);
@@ -47,11 +49,31 @@ export function SplitChatView({
       const data = await res.json();
       if (data.previewUrl && data.previewUrl.startsWith("https://") && !data.previewUrl.includes("localhost")) {
         setPreviewUrl(data.previewUrl);
+        setIsPortListening(Boolean(data.isListening));
       } else {
         setPreviewUrl(null);
+        setIsPortListening(false);
       }
     } catch {
       setPreviewUrl(null);
+      setIsPortListening(false);
+    }
+  };
+
+  const handleStartDevServer = async () => {
+    setStartingDev(true);
+    try {
+      await fetch("/api/sandbox/start-dev", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, port: 5173 }),
+      });
+      setTimeout(() => {
+        fetchPreviewUrl();
+        setStartingDev(false);
+      }, 3000);
+    } catch {
+      setStartingDev(false);
     }
   };
 
@@ -211,7 +233,7 @@ export function SplitChatView({
         <div className="flex-1 overflow-hidden">
           {activePane === "preview" && (
             <div className="w-full h-full bg-slate-900/40 flex justify-center items-center p-4">
-              {previewUrl && previewUrl.startsWith("https://") && !previewUrl.includes("localhost") ? (
+              {previewUrl && isPortListening ? (
                 <iframe
                   src={previewUrl}
                   title="Live Sandbox Preview"
@@ -219,12 +241,27 @@ export function SplitChatView({
                   sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
                 />
               ) : (
-                <div className="text-center p-8 bg-slate-900 border border-slate-800 rounded-xl max-w-md space-y-3 font-mono">
+                <div className="text-center p-8 bg-slate-900 border border-slate-800 rounded-xl max-w-md space-y-4 font-mono shadow-xl">
                   <div className="text-3xl">🚀</div>
-                  <h3 className="text-slate-200 font-bold text-sm">E2B Web Preview Idle</h3>
-                  <p className="text-slate-400 text-xs leading-relaxed">
-                    When Sovereign Agent spins up a live web server inside the E2B sandbox micro-VM (e.g. `pnpm dev`), the forwarded live preview will render here automatically.
-                  </p>
+                  <div className="space-y-1">
+                    <h3 className="text-slate-200 font-bold text-sm">
+                      {previewUrl ? "Sandbox Running (Port 5173 Idle)" : "E2B Web Preview Idle"}
+                    </h3>
+                    <p className="text-slate-400 text-xs leading-relaxed">
+                      {previewUrl
+                        ? "The E2B cloud sandbox is online. Launch Vite or start a web server to stream your live application preview."
+                        : "When Sovereign Agent spins up a live web server inside the E2B sandbox micro-VM, the forwarded live preview will render here automatically."}
+                    </p>
+                  </div>
+                  {previewUrl && (
+                    <button
+                      onClick={handleStartDevServer}
+                      disabled={startingDev}
+                      className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg text-xs font-mono transition-colors disabled:opacity-50 inline-flex items-center gap-2"
+                    >
+                      <span>{startingDev ? "Starting Dev Server..." : "Start Dev Server (Port 5173)"}</span>
+                    </button>
+                  )}
                 </div>
               )}
             </div>

@@ -28,26 +28,63 @@ function resolveWorkspacePath(relativePath: string): string {
 
 const SYSTEM_PROMPT = `You are Sovereign Agent, a high-autonomy full-stack coding assistant operating on an Express 5 and Cloudflare AI edge architecture.
 
-Rules of Engagement:
-1. Break down complex user goals into logical subtasks.
-2. Select appropriate tools to inspect code, write fixes, execute commands, or test builds.
-3. Observe tool outputs critically. If an error occurs, analyze the stack trace or log and attempt self-correction.
-4. Keep user informed of progress through direct reasoning notes.
-5. Provide concise summary solutions upon completing the objective.`;
+Capabilities & Rules:
+1. Break down user goals into clear steps.
+2. You have a full suite of tools: create_directory, write_file, read_file, delete_file, list_directory, search_workspace, apply_patch, and run_command.
+3. When asked to create folders or directories (e.g. 'create a folder'), call the create_directory tool or run_command.
+4. When asked to create or edit files, use write_file or apply_patch.
+5. If an error occurs, analyze the error output and attempt self-correction.
+6. Provide concise, helpful summaries when the task is complete.`;
 
 /**
  * Register real, non-stub core workspace tools in the tool registry.
  */
 function initializeCoreTools(registry: ToolRegistry = globalToolRegistry) {
-  // 1. Tool: Search & Workspace Inspection (Real Filesystem Regex Search)
+  // 1. Tool: Create Directory
+  registry.registerTool({
+    name: "create_directory",
+    description: "Creates a new folder or directory (and any necessary parent directories) in the workspace.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Relative directory path to create (e.g. 'src/components/common' or 'my-new-folder')",
+        },
+      },
+      required: ["path"],
+    },
+    execute: async (args: any) => {
+      try {
+        const targetDir = resolveWorkspacePath(args.path || args.dirPath || "new-folder");
+        await fs.mkdir(targetDir, { recursive: true });
+        return {
+          success: true,
+          output: `Successfully created directory '${args.path || args.dirPath}'.`,
+          data: { path: args.path },
+        };
+      } catch (err: any) {
+        return {
+          success: false,
+          output: `Failed to create directory '${args.path}': ${err.message}`,
+        };
+      }
+    },
+  });
+
+  // 2. Tool: Search & Workspace Inspection
   registry.registerTool({
     name: "search_workspace",
     description: "Search for text patterns, function symbols, or keywords across workspace files.",
-    parameters: z.object({
-      query: z.string().describe("Text or regex pattern to search for in files."),
-      pathPrefix: z.string().optional().describe("Optional subdirectory prefix to narrow search scope."),
-    }),
-    execute: async (args) => {
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Text or regex pattern to search for in files." },
+        pathPrefix: { type: "string", description: "Optional subdirectory prefix to narrow search scope." },
+      },
+      required: ["query"],
+    },
+    execute: async (args: any) => {
       try {
         const searchDir = resolveWorkspacePath(args.pathPrefix || ".");
         const regex = new RegExp(args.query, "i");
@@ -94,14 +131,18 @@ function initializeCoreTools(registry: ToolRegistry = globalToolRegistry) {
     },
   });
 
-  // 2. Tool: Read File (Real Filesystem Read)
+  // 3. Tool: Read File
   registry.registerTool({
     name: "read_file",
     description: "Read the exact text contents of a file at a given workspace path.",
-    parameters: z.object({
-      path: z.string().describe("Relative filepath to read from workspace root."),
-    }),
-    execute: async (args) => {
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Relative filepath to read from workspace root." },
+      },
+      required: ["path"],
+    },
+    execute: async (args: any) => {
       try {
         const targetPath = resolveWorkspacePath(args.path);
         const content = await fs.readFile(targetPath, "utf-8");
@@ -119,19 +160,23 @@ function initializeCoreTools(registry: ToolRegistry = globalToolRegistry) {
     },
   });
 
-  // 3. Tool: Write File (Real Filesystem Create/Overwrite)
+  // 4. Tool: Write File
   registry.registerTool({
     name: "write_file",
     description: "Create or overwrite a file with specified content.",
-    parameters: z.object({
-      path: z.string().describe("Relative filepath to write."),
-      content: z.string().describe("Full file content to write."),
-    }),
-    execute: async (args) => {
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Relative filepath to write." },
+        content: { type: "string", description: "Full file content to write." },
+      },
+      required: ["path", "content"],
+    },
+    execute: async (args: any) => {
       try {
         const targetPath = resolveWorkspacePath(args.path);
         await fs.mkdir(path.dirname(targetPath), { recursive: true });
-        await fs.writeFile(targetPath, args.content, "utf-8");
+        await fs.writeFile(targetPath, args.content || "", "utf-8");
         return {
           success: true,
           output: `File successfully written to '${args.path}'`,
@@ -146,16 +191,49 @@ function initializeCoreTools(registry: ToolRegistry = globalToolRegistry) {
     },
   });
 
-  // 4. Tool: Apply Exact Patch (Replace Code Block)
+  // 5. Tool: Delete File or Directory
+  registry.registerTool({
+    name: "delete_file",
+    description: "Deletes a file or directory at the given path.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Relative file or directory path to remove." },
+      },
+      required: ["path"],
+    },
+    execute: async (args: any) => {
+      try {
+        const targetPath = resolveWorkspacePath(args.path);
+        await fs.rm(targetPath, { recursive: true, force: true });
+        return {
+          success: true,
+          output: `Successfully deleted '${args.path}'.`,
+          data: { path: args.path },
+        };
+      } catch (err: any) {
+        return {
+          success: false,
+          output: `Failed to delete '${args.path}': ${err.message}`,
+        };
+      }
+    },
+  });
+
+  // 6. Tool: Apply Exact Patch
   registry.registerTool({
     name: "apply_patch",
     description: "Replace an exact target segment of code in a file with new code.",
-    parameters: z.object({
-      path: z.string().describe("Relative filepath to patch."),
-      oldStr: z.string().describe("Exact string segment to search for and replace."),
-      newStr: z.string().describe("New replacement string segment."),
-    }),
-    execute: async (args) => {
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Relative filepath to patch." },
+        oldStr: { type: "string", description: "Exact string segment to search for and replace." },
+        newStr: { type: "string", description: "New replacement string segment." },
+      },
+      required: ["path", "oldStr", "newStr"],
+    },
+    execute: async (args: any) => {
       try {
         const targetPath = resolveWorkspacePath(args.path);
         const content = await fs.readFile(targetPath, "utf-8");
@@ -180,14 +258,17 @@ function initializeCoreTools(registry: ToolRegistry = globalToolRegistry) {
     },
   });
 
-  // 5. Tool: List Directory
+  // 7. Tool: List Directory
   registry.registerTool({
     name: "list_directory",
     description: "List directory files and folder contents.",
-    parameters: z.object({
-      path: z.string().optional().describe("Directory path relative to workspace (defaults to '.')."),
-    }),
-    execute: async (args) => {
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Directory path relative to workspace (defaults to '.')." },
+      },
+    },
+    execute: async (args: any) => {
       try {
         const targetDir = resolveWorkspacePath(args.path || ".");
         const entries = await fs.readdir(targetDir, { withFileTypes: true });
@@ -207,16 +288,19 @@ function initializeCoreTools(registry: ToolRegistry = globalToolRegistry) {
     },
   });
 
-  // 6. Tool: Run Shell Command (Real Terminal Sandbox Execution)
+  // 8. Tool: Run Shell Command
   registry.registerTool({
     name: "run_command",
-    description: "Execute a shell command (e.g., pnpm run typecheck, npm test, git status) in terminal sandbox.",
+    description: "Execute a shell command (e.g., mkdir, pnpm run typecheck, npm test, git status) in terminal sandbox.",
     requiresApproval: false,
-    parameters: z.object({
-      command: z.string().describe("Shell command string to run in workspace directory."),
-    }),
-    execute: async (args, context) => {
-      // Basic dangerous command filter
+    parameters: {
+      type: "object",
+      properties: {
+        command: { type: "string", description: "Shell command string to run in workspace directory." },
+      },
+      required: ["command"],
+    },
+    execute: async (args: any, context?: any) => {
       if (/rm\s+-rf\s+\/|mkfs|dd|:\(\)\{\s*:\|:&\s*\};:/i.test(args.command)) {
         return {
           success: false,

@@ -65,7 +65,7 @@ sandboxRouter.get("/tree", async (req: Request, res: Response) => {
 
 /**
  * GET /api/sandbox/preview-url
- * Returns forwarded HTTPS preview URL for web server running inside E2B
+ * Returns forwarded HTTPS preview URL and checks if a service is actively listening on the port
  */
 sandboxRouter.get("/preview-url", async (req: Request, res: Response) => {
   try {
@@ -76,11 +76,60 @@ sandboxRouter.get("/preview-url", async (req: Request, res: Response) => {
     const forwardedHost = sandbox.getHost(port);
     const previewUrl = `https://${forwardedHost}`;
 
+    // Check if the service is actively listening on the specified port
+    let isListening = false;
+    try {
+      const checkRes = await E2BSandboxManager.executeCommand(
+        sessionId,
+        `nc -z -w 1 127.0.0.1 ${port} >/dev/null 2>&1 && echo "LISTENING" || (curl -s -m 1 http://127.0.0.1:${port} >/dev/null 2>&1 && echo "LISTENING" || echo "STOPPED")`,
+        "/home/user/workspace",
+        3000
+      );
+      isListening = checkRes.stdout.includes("LISTENING");
+    } catch {
+      isListening = false;
+    }
+
     return res.json({
       sessionId,
       port,
       previewUrl,
       isForwarded: true,
+      isListening,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/sandbox/start-dev
+ * Starts a live web dev server on port 5173 inside the sandbox
+ */
+sandboxRouter.post("/start-dev", async (req: Request, res: Response) => {
+  try {
+    const sessionId = req.body?.sessionId || "default-session";
+    const port = parseInt(req.body?.port || "5173", 10);
+
+    // Launch background server (e.g. npx vite or python3 http.server or static server if no vite)
+    const launchCmd = `
+      if [ -f "package.json" ]; then
+        (nohup npm run dev -- --host 0.0.0.0 --port ${port} > /tmp/devserver.log 2>&1 &) || (nohup npx vite --host 0.0.0.0 --port ${port} > /tmp/devserver.log 2>&1 &)
+      else
+        echo "<h1>Sovereign Agent Workspace</h1><p>Sandbox live on port ${port}</p>" > index.html
+        (nohup python3 -m http.server ${port} --bind 0.0.0.0 > /tmp/devserver.log 2>&1 &) || (nohup npx http-server -p ${port} -a 0.0.0.0 > /tmp/devserver.log 2>&1 &)
+      fi
+      sleep 1
+    `;
+
+    const result = await E2BSandboxManager.executeCommand(sessionId, launchCmd, "/home/user/workspace");
+    const sandbox = await E2BSandboxManager.getOrCreate(sessionId);
+    const forwardedHost = sandbox.getHost(port);
+
+    return res.json({
+      success: true,
+      previewUrl: `https://${forwardedHost}`,
+      output: result.stdout || "Dev server launch initiated.",
     });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
