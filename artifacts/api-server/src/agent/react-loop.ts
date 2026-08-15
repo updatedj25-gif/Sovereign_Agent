@@ -117,14 +117,14 @@ export class ReActLoop {
 
       // 3. Execute requested tool calls sequentially
       for (const call of toolCalls) {
-        const toolName = call.function.name;
-        const rawArgs = call.function.arguments;
+        const toolName = call.function?.name || (call as any).name || "search_workspace";
+        const rawArgs = call.function?.arguments || (call as any).arguments || {};
 
         this.emit({
           type: "task_running",
           task: `Executing tool: ${toolName}`,
           tool: toolName,
-          arguments: rawArgs,
+          arguments: typeof rawArgs === "string" ? rawArgs : JSON.stringify(rawArgs),
         });
 
         // Execute tool via tool registry

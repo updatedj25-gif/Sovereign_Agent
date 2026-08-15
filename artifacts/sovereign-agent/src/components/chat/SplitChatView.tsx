@@ -119,6 +119,26 @@ export function SplitChatView({
     setInputText("");
   };
 
+  const formatMessageContent = (content: string) => {
+    if (!content) return "";
+    // Check if raw JSON tool_calls or response was printed
+    if (content.trim().startsWith("{") && content.includes('"tool_calls"')) {
+      try {
+        const parsed = JSON.parse(content);
+        if (parsed.tool_calls && Array.isArray(parsed.tool_calls)) {
+          const names = parsed.tool_calls.map((t: any) => {
+            const name = t.name || t.function?.name || "tool";
+            const args = t.arguments || t.function?.arguments;
+            const argStr = typeof args === "object" ? JSON.stringify(args) : String(args || "");
+            return `${name}(${argStr})`;
+          }).join(", ");
+          return `Executed actions: ${names}`;
+        }
+      } catch {}
+    }
+    return content;
+  };
+
   return (
     <div className="flex h-full bg-slate-950 text-slate-100 font-mono text-xs overflow-hidden">
       {/* LEFT COLUMN: Chat Messages & Subtask Step Accordions */}
@@ -142,7 +162,7 @@ export function SplitChatView({
                     {m.role === "user" ? "👤 User Prompt" : "🤖 Sovereign Agent"}
                   </span>
                   <p className="whitespace-pre-wrap font-sans text-xs leading-relaxed">
-                    {m.content}
+                    {formatMessageContent(m.content)}
                   </p>
                 </div>
 

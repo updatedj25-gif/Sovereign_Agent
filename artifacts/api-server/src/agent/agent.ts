@@ -387,19 +387,73 @@ async function callCloudflareAI(
   }
 
   const data = (await response.json()) as any;
-  const result = data.result;
+  let result = data.result;
 
-  if (result?.response) {
+  if (typeof result === "string") {
+    try {
+      const parsed = JSON.parse(result);
+      if (parsed && typeof parsed === "object") {
+        result = parsed;
+      }
+    } catch {}
+  }
+
+  // Extract raw tool calls from result.tool_calls or result
+  const rawToolCalls = result?.tool_calls || (Array.isArray(result) ? result : undefined);
+
+  if (Array.isArray(rawToolCalls) && rawToolCalls.length > 0) {
+    const normalizedToolCalls = rawToolCalls.map((call: any, idx: number) => {
+      const toolName = call.function?.name || call.name || "search_workspace";
+      const rawArgs = call.function?.arguments || call.arguments || {};
+      const stringifiedArgs = typeof rawArgs === "string" ? rawArgs : JSON.stringify(rawArgs);
+
+      return {
+        id: call.id || `call_${Date.now()}_${idx}`,
+        type: "function" as const,
+        function: {
+          name: toolName,
+          arguments: stringifiedArgs,
+        },
+      };
+    });
+
     return {
       role: "assistant",
-      content: result.response,
-      tool_calls: result.tool_calls || undefined,
+      content: result?.response || "",
+      tool_calls: normalizedToolCalls,
     };
+  }
+
+  // Check if text content contains an embedded JSON tool call
+  const contentText = typeof result?.response === "string" ? result.response : (typeof result === "string" ? result : "");
+  if (contentText) {
+    try {
+      const match = contentText.match(/\{[\s\S]*"tool_calls"[\s\S]*\}/);
+      if (match) {
+        const parsed = JSON.parse(match[0]);
+        if (Array.isArray(parsed.tool_calls) && parsed.tool_calls.length > 0) {
+          return {
+            role: "assistant",
+            content: parsed.response || "",
+            tool_calls: parsed.tool_calls.map((c: any, i: number) => ({
+              id: c.id || `call_${Date.now()}_${i}`,
+              type: "function" as const,
+              function: {
+                name: c.function?.name || c.name,
+                arguments: typeof (c.function?.arguments || c.arguments) === "object"
+                  ? JSON.stringify(c.function?.arguments || c.arguments)
+                  : String(c.function?.arguments || c.arguments || "{}"),
+              },
+            })),
+          };
+        }
+      }
+    } catch {}
   }
 
   return {
     role: "assistant",
-    content: typeof result === "string" ? result : JSON.stringify(result),
+    content: contentText || (result ? JSON.stringify(result) : "Task completed."),
   };
 }
 
