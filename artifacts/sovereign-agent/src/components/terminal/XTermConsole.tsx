@@ -3,6 +3,7 @@ import { Terminal as TerminalIcon, Play, Trash2, CheckCircle2, XCircle, Clock } 
 import WORKER_BASE from "@/lib/worker-base";
 
 interface XTermConsoleProps {
+  sessionId?: string;
   initialCommand?: string;
   onExecuteCommand?: (cmd: string) => void;
   streamLogs?: string;
@@ -10,6 +11,7 @@ interface XTermConsoleProps {
 }
 
 export function XTermConsole({
+  sessionId = "default-session",
   initialCommand = "",
   onExecuteCommand,
   streamLogs,
@@ -55,7 +57,7 @@ export function XTermConsole({
       const res = await fetch(`${WORKER_BASE}/api/sandbox/exec`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ command: trimmed }),
+        body: JSON.stringify({ sessionId, command: trimmed }),
       });
 
       if (res.ok) {

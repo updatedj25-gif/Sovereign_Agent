@@ -1,15 +1,15 @@
 export interface ChatSessionItem {
   id: string;
   title: string;
-  timestamp?: number;
   updatedAt?: string;
-  messages?: any[];
-  logs?: string[];
+  timestamp?: number;
   preview?: string;
   messageCount?: number;
+  messages?: Array<{ role: "user" | "assistant"; content: string }>;
+  logs?: string[];
 }
 
-const STORAGE_KEY = "sovereign_chat_sessions_v2";
+const STORAGE_KEY = "sovereign_chat_sessions_v1";
 
 export function getChatHistory(): ChatSessionItem[] {
   try {
@@ -26,10 +26,7 @@ export function getChatHistory(): ChatSessionItem[] {
 export function saveChatSession(session: ChatSessionItem): void {
   try {
     const history = getChatHistory().filter((s) => s.id !== session.id);
-    const updated = [
-      { ...session, timestamp: session.timestamp || Date.now() },
-      ...history,
-    ].slice(0, 50);
+    const updated = [session, ...history].slice(0, 50);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
   } catch (e) {
     console.error("Failed to save chat session:", e);

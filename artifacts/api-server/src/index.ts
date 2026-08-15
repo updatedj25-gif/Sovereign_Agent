@@ -11,6 +11,8 @@ import { reactAgentRouter } from "./routes/react-agent";
 import { contextRouter } from "./routes/context";
 import { safetyRouter } from "./routes/safety";
 import { mcpRouter } from "./routes/mcp";
+import { streamRouter } from "./routes/stream";
+import { approvalRouter } from "./routes/approval";
 
 const app: Express = express();
 
@@ -49,6 +51,8 @@ app.use("/api/sandbox", sandboxRouter);
 app.use("/api/perception", perceptionRouter);
 app.use("/api/edit", editRouter);
 app.use("/api/agent", reactAgentRouter);
+app.use("/api/agent", streamRouter);
+app.use("/api/agent", approvalRouter);
 app.use("/api/context", contextRouter);
 app.use("/api/safety", safetyRouter);
 app.use("/api/mcp", mcpRouter);

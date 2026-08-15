@@ -1,5 +1,6 @@
 import React from "react";
-import { ShieldAlert, CheckCircle2, XCircle } from "lucide-react";
+import { ShieldAlert, CheckCircle2, XCircle, FileCode, Terminal, AlertTriangle } from "lucide-react";
+import { apiUrl } from "@/lib/worker-base";
 
 export interface PendingApprovalData {
   approvalId?: string;
@@ -13,17 +14,14 @@ export interface PendingApprovalData {
   path?: string;
   diff?: string;
   command?: string;
-  rule?: string;
-  explanation?: string;
   riskLevel?: "low" | "medium" | "high" | "critical" | string;
 }
 
-export interface HITLApprovalModalProps {
+interface HITLApprovalModalProps {
   approvalData?: PendingApprovalData | null;
   data?: PendingApprovalData | null;
   isOpen?: boolean;
   onResolved?: (approvalId: string, approved: boolean) => void;
-  onResolve?: (approvalId: string, approved: boolean) => void;
   onApprove?: () => void;
   onReject?: () => void;
 }
@@ -33,7 +31,6 @@ export function HITLApprovalModal({
   data,
   isOpen,
   onResolved,
-  onResolve,
   onApprove,
   onReject,
 }: HITLApprovalModalProps) {
@@ -43,36 +40,38 @@ export function HITLApprovalModal({
   if (!isVisible || !activeData) return null;
 
   const approvalId = activeData.approvalId || activeData.id || "unknown";
-  const toolName =
-    activeData.toolName || activeData.type || activeData.title || "Privileged Tool Action";
-  const reason =
-    activeData.dangerReason ||
-    activeData.explanation ||
-    activeData.description ||
-    "Action requires explicit operator authorization.";
+  const toolName = activeData.toolName || activeData.type || activeData.title || "Privileged Tool Action";
+  const reason = activeData.dangerReason || activeData.description || "Action requires explicit operator authorization.";
 
   const handleDecision = async (approved: boolean) => {
     try {
-      if (approvalId) {
-        // Send decision to Express 5 Safety Endpoint
-        await fetch("/api/safety/approve", {
+      if (approvalId !== "unknown") {
+        const response = await fetch(apiUrl("/api/agent/approve"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ approvalId, approved }),
+          body: JSON.stringify({
+            approvalId,
+            approved,
+            reason: approved ? "Approved by operator in cockpit." : "Rejected by operator in cockpit.",
+          }),
         });
+        if (!response.ok) {
+          throw new Error(`Approval request failed with HTTP ${response.status}`);
+        }
       }
     } catch (e) {
-      console.error("Failed to post approval decision to backend:", e);
+      console.error("Failed to post approval resolution to backend:", e);
     }
 
-    if (onResolved) onResolved(approvalId, approved);
-    if (onResolve) onResolve(approvalId, approved);
+    if (onResolved) {
+      onResolved(approvalId, approved);
+    }
     if (approved && onApprove) onApprove();
     if (!approved && onReject) onReject();
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4 animate-in fade-in duration-150 font-mono text-xs">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 animate-in fade-in duration-150">
       <div className="w-full max-w-xl bg-slate-900 border border-amber-500/40 rounded-xl shadow-2xl overflow-hidden flex flex-col font-sans">
         {/* Header */}
         <div className="p-4 bg-slate-950 border-b border-amber-500/20 flex items-center justify-between">
@@ -142,7 +141,7 @@ export function HITLApprovalModal({
         </div>
 
         {/* Actions */}
-        <div className="p-3 bg-slate-950 border-t border-slate-800 flex items-center justify-end gap-2 font-mono">
+        <div className="p-3 bg-slate-950 border-t border-slate-800 flex items-center justify-end gap-2">
           <button
             type="button"
             onClick={() => handleDecision(false)}
@@ -154,7 +153,7 @@ export function HITLApprovalModal({
           <button
             type="button"
             onClick={() => handleDecision(true)}
-            className="px-4 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-semibold transition-colors flex items-center gap-1.5 shadow-md shadow-amber-500/20 font-bold"
+            className="px-4 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-semibold transition-colors flex items-center gap-1.5 shadow-md shadow-amber-500/20"
           >
             <CheckCircle2 className="w-4 h-4" />
             <span>Approve & Authorize</span>

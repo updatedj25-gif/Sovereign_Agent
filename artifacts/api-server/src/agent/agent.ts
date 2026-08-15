@@ -397,6 +397,7 @@ export async function runAgentStream(options: AgentStreamOptions): Promise<strin
     { owner, repo }
   );
 
+  onEvent({ type: "stream_finished", finalResponse: result.finalAnswer });
   return result.finalAnswer;
 }
 

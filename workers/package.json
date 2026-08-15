@@ -1,0 +1,14 @@
+{
+  "name": "@workspace/workers",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm run build:main && pnpm run build:api",
+    "build:main": "wrangler deploy --dry-run --config wrangler.toml",
+    "build:api": "wrangler deploy --dry-run --config wrangler.api.toml"
+  },
+  "devDependencies": {
+    "wrangler": "^4.120.0"
+  }
+}
