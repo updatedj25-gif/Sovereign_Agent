@@ -10,11 +10,67 @@ import {
   Search,
   Code2,
   Zap,
+  KeyRound,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
+import { EnvInputBox, type EnvRequestData } from "./EnvInputBox";
 
 interface LandingViewProps {
   onSubmitPrompt: (prompt: string) => void;
 }
+
+const DEFAULT_ENV_DATA: EnvRequestData = {
+  stage: "initial_setup",
+  reason: "Paste your Cloudflare API Key and GitHub Token below to authenticate agentic deployments, AST perceptions, and repository actions.",
+  keys: [
+    {
+      name: "CLOUDFLARE_API_KEY",
+      label: "Cloudflare API Key / Token",
+      source: "Cloudflare",
+      sourceCategory: "Cloudflare",
+      description: "API Token or Global Key for Cloudflare Workers & Pages deployments",
+      placeholder: "Paste Cloudflare API key / token here...",
+      required: false,
+    },
+    {
+      name: "CLOUDFLARE_ACCOUNT_ID",
+      label: "Cloudflare Account ID",
+      source: "Cloudflare",
+      sourceCategory: "Cloudflare",
+      description: "Cloudflare Account ID found in your dashboard overview",
+      placeholder: "e.g. 1a2b3c4d5e6f...",
+      required: false,
+    },
+    {
+      name: "CLOUDFLARE_EMAIL",
+      label: "Cloudflare Email",
+      source: "Cloudflare",
+      sourceCategory: "Cloudflare",
+      description: "Account email address (required only when using Global API key)",
+      placeholder: "user@domain.com",
+      required: false,
+    },
+    {
+      name: "GITHUB_TOKEN",
+      label: "GitHub Personal Access Token",
+      source: "GitHub",
+      sourceCategory: "GitHub",
+      description: "GitHub PAT (classic or fine-grained) with 'repo' and 'workflow' scope",
+      placeholder: "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      required: false,
+    },
+    {
+      name: "GITHUB_REPO",
+      label: "Target GitHub Repository",
+      source: "GitHub",
+      sourceCategory: "GitHub",
+      description: "Target repository identifier for synchronization and PR creation",
+      placeholder: "updatedj25-gif/Sovereign_Agent",
+      required: false,
+    },
+  ],
+};
 
 const STARTER_PROMPTS = [
   {
@@ -45,6 +101,7 @@ const STARTER_PROMPTS = [
 
 export function LandingView({ onSubmitPrompt }: LandingViewProps) {
   const [prompt, setPrompt] = useState("");
+  const [showEnvBox, setShowEnvBox] = useState(true);
 
   const handleSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -61,7 +118,7 @@ export function LandingView({ onSubmitPrompt }: LandingViewProps) {
 
   return (
     <div className="flex-1 flex flex-col justify-between overflow-y-auto bg-slate-950 p-6 sm:p-10 font-sans">
-      <div className="max-w-4xl w-full mx-auto space-y-8 my-auto">
+      <div className="max-w-4xl w-full mx-auto space-y-6 my-auto">
         {/* Hero Section */}
         <div className="text-center space-y-3">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-mono">
@@ -76,6 +133,44 @@ export function LandingView({ onSubmitPrompt }: LandingViewProps) {
             Execute complex coding tasks, run sandboxed commands, perform AST code perception,
             and apply verified diff patches under Human-in-the-Loop supervision.
           </p>
+        </div>
+
+        {/* Cloudflare & GitHub Credentials Configuration Box */}
+        <div className="border border-slate-800 bg-slate-900/60 rounded-xl overflow-hidden shadow-lg transition-all">
+          <button
+            type="button"
+            onClick={() => setShowEnvBox((prev) => !prev)}
+            className="w-full flex items-center justify-between p-3.5 text-left hover:bg-slate-800/50 transition-colors cursor-pointer"
+          >
+            <div className="flex items-center gap-2.5">
+              <div className="p-1.5 bg-amber-500/10 border border-amber-500/20 rounded-lg text-amber-400">
+                <KeyRound className="w-4 h-4" />
+              </div>
+              <div>
+                <div className="text-xs font-semibold text-slate-200 flex items-center gap-2">
+                  <span>API Credentials & Environment Secrets</span>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded border uppercase bg-amber-500/10 text-amber-400 border-amber-500/20">
+                    Cloudflare & GitHub
+                  </span>
+                </div>
+                <div className="text-[11px] text-slate-400 font-sans mt-0.5">
+                  Paste your Cloudflare API Key, Account ID, and GitHub Token to enable full autonomous features
+                </div>
+              </div>
+            </div>
+            <div className="text-slate-400 hover:text-slate-200">
+              {showEnvBox ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+            </div>
+          </button>
+
+          {showEnvBox && (
+            <div className="p-3.5 pt-0 border-t border-slate-800/80">
+              <EnvInputBox
+                data={DEFAULT_ENV_DATA}
+                workspaceGroupId="global-workspace"
+              />
+            </div>
+          )}
         </div>
 
         {/* Prompt Input Box */}

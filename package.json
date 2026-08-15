@@ -11,8 +11,9 @@
     "dev": "tsx server.ts",
     "dev:api": "tsx artifacts/api-server/src/index.ts",
     "dev:frontend": "vite",
-    "build": "vite build && esbuild server.ts --bundle --platform=node --format=esm --packages=external --sourcemap --outfile=dist/server.js",
-    "start": "node dist/server.js",
+    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
+    "start": "node dist/server.cjs",
+    "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "sync:github": "tsx scripts/sync-github.ts"
   },

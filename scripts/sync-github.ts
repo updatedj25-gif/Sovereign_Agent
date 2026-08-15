@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { execSync } from "child_process";
 
 async function syncGithub() {
@@ -34,6 +35,13 @@ async function syncGithub() {
     }
 
     // Fetch and rebase / push
+    console.log("🔄 Pulling latest changes from origin main with rebase...");
+    try {
+      execSync("git pull --rebase origin main", { stdio: "inherit" });
+    } catch {
+      console.warn("⚠️ Rebase pull notice — proceeding with push...");
+    }
+
     console.log("🚀 Pushing to origin main...");
     execSync("git push origin main", { stdio: "inherit" });
 

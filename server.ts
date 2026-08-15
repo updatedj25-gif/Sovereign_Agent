@@ -6,7 +6,7 @@ import app from "./artifacts/api-server/src/index";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const PORT = Number(process.env.API_PORT) || 5000;
+const PORT = 3000;
 
 async function startServer() {
   if (process.env.NODE_ENV === "production") {

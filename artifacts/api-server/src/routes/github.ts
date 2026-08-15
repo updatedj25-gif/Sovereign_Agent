@@ -203,3 +203,50 @@ githubRouter.post("/repos/:owner/:repo/patch", async (req: Request, res: Respons
     return res.status(500).json({ error: err.message || "Internal server error" });
   }
 });
+
+// ==========================================
+// 6. POST /api/github/sync — Synchronize local workspace with origin main
+// ==========================================
+githubRouter.post("/sync", async (req: Request, res: Response) => {
+  const { commitMessage } = req.body || {};
+  const token = process.env.GITHUB_API_TOKEN || process.env.GITHUB_TOKEN;
+  const repoUrl = process.env.GITHUB_REPO_URL || "https://github.com/updatedj25-gif/Sovereign_Agent.git";
+
+  try {
+    const { execSync } = await import("child_process");
+    execSync('git config user.name "updatedj25-gif"', { stdio: "pipe" });
+    execSync('git config user.email "updatedj25@gmail.com"', { stdio: "pipe" });
+
+    if (token) {
+      const cleanRepo = repoUrl.replace(/^https?:\/\//, "").replace(/^.*@/, "");
+      const authenticatedUrl = `https://x-access-token:${token}@${cleanRepo}`;
+      execSync(`git remote set-url origin "${authenticatedUrl}"`, { stdio: "pipe" });
+    }
+
+    execSync("git add -A", { stdio: "pipe" });
+    const status = execSync("git status --porcelain").toString().trim();
+    if (status) {
+      const msg = commitMessage || `feat: sync sovereign agent codebase updates (${new Date().toISOString()})`;
+      execSync(`git commit -m "${msg.replace(/"/g, '\\"')}"`, { stdio: "pipe" });
+    }
+
+    try {
+      execSync("git pull --rebase origin main", { stdio: "pipe" });
+    } catch {
+      // Ignore if rebase has no upstream conflict
+    }
+
+    const pushOutput = execSync("git push origin main", { stdio: "pipe" }).toString();
+
+    return res.json({
+      success: true,
+      message: "Successfully synchronized codebase with origin main.",
+      output: pushOutput,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      error: "Git sync failed",
+      details: err.message || String(err),
+    });
+  }
+});
