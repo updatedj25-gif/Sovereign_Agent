@@ -26,7 +26,6 @@ export interface SubAction {
   status: "pending" | "running" | "completed" | "error";
   command?: string;
   output?: string;
-  envFields?: { key: string; label: string; placeholder?: string; type?: string }[];
 }
 
 export interface TaskGroup {
@@ -38,41 +37,37 @@ export interface TaskGroup {
   subActions: SubAction[];
 }
 
-const SYSTEM_PROMPT = `You are Sovereign Agent, an autonomous software engineer running inside a real E2B Linux Micro-VM.
-
-You solve tasks dynamically by invoking tools:
+const SYSTEM_PROMPT = `You are Sovereign Agent, an autonomous software engineer running with bash execution inside an E2B Linux VM.
 
 AVAILABLE TOOLS:
-1. Request an Env Box for credentials/API keys from the user:
-<request_env_box title="Configure Repository & Cloudflare Credentials">
-<field key="GITHUB_TOKEN" label="GitHub Personal Access Token" placeholder="ghp_..." type="password" />
-<field key="CLOUDFLARE_API_TOKEN" label="Cloudflare API Token" placeholder="cfut_..." type="password" />
-<field key="CUSTOM_ENV" label="Custom Environment Variable" placeholder="VALUE" type="text" />
-</request_env_box>
-
-2. Declare a Task Phase Header:
-<task_phase title="Workspace Operations">
-Description of the current phase.
-</task_phase>
-
-3. Execute bash command:
-<execute_command>
-mkdir -p bola && ls -la
-</execute_command>
-
-4. Write file:
-<write_file path="src/App.tsx">
-// Complete Code
+1. Write file (Always use full relative paths including folders):
+<write_file path="folder_name/filename.ext">
+// File contents here
 </write_file>
 
-5. Read file:
-<read_file path="package.json" />
+2. Execute bash command:
+<execute_command>
+mkdir -p folder_name && touch folder_name/file.txt
+</execute_command>
+
+3. Read file:
+<read_file path="folder_name/file.txt" />
+
+4. Create and Present Environment Credentials Box:
+<write_file path=".env">
+# ==========================================
+# SOVEREIGN AGENT CREDENTIALS CONFIGURATION
+# ==========================================
+GITHUB_TOKEN=ghp_paste_your_github_token_here
+CLOUDFLARE_API_TOKEN=cfut_paste_your_cloudflare_api_token_here
+CLOUDFLARE_ACCOUNT_ID=1b77c2a9725b1e4c20f52f8ecfadbb3f
+E2B_API_KEY=e2b_paste_your_key_here
+</write_file>
 
 RULES:
-- When the user asks for an "env box" or credentials, use the <request_env_box> tool immediately.
-- When creating directories, execute "mkdir <folder>".
-- When building UI, write React 19 + Tailwind CSS code in src/App.tsx.
-- Provide clear summaries of actions taken.`;
+- When the user asks to create a file inside a folder (e.g. "inside adebola"), write to "<folder>/<filename>" (e.g. path="adebola/data.json" or path="adebola/index.js"). NEVER write to root when a folder is specified.
+- When the user asks for an "env box" or credentials template, create the ".env" file immediately with clean placeholder keys and display the credentials box in your response.
+- When creating UI components, provide complete React 19 + Tailwind CSS in src/App.tsx.`;
 
 function sanitizeForLivePreview(rawCode: string): string {
   let code = rawCode;
@@ -210,7 +205,7 @@ export class AgentSession extends DurableObject {
       const sbx = await Sandbox.create("base", { apiKey });
       this.e2bSandboxId = sbx.sandboxId;
       await this.ctx.storage.put("e2bSandboxId", this.e2bSandboxId);
-      console.log(`[E2B] Sandbox created: ${this.e2bSandboxId}`);
+      console.log(`[E2B] Sandbox active: ${this.e2bSandboxId}`);
       return sbx;
     } catch (err: any) {
       console.error("[E2B Error]:", err.message);
@@ -238,10 +233,22 @@ export class AgentSession extends DurableObject {
   }
 
   public async writeFile(path: string, content: string): Promise<void> {
+    // Automatically register parent directory if path contains subfolders
+    if (path.includes("/")) {
+      const parentDir = path.substring(0, path.lastIndexOf("/"));
+      if (!this.files[parentDir]) {
+        this.files[parentDir] = { content: "", type: "directory" };
+      }
+    }
+
     this.files[path] = { content, type: "file" };
     const sbx = await this.getSandboxInstance();
     if (sbx) {
       try {
+        if (path.includes("/")) {
+          const parentDir = path.substring(0, path.lastIndexOf("/"));
+          await sbx.commands.run(`mkdir -p "${parentDir}"`);
+        }
         await sbx.files.write(path, content);
       } catch (err: any) {
         console.error(`[E2B Write Error ${path}]:`, err.message);
@@ -250,7 +257,13 @@ export class AgentSession extends DurableObject {
   }
 
   public async readFile(path: string): Promise<string> {
+    if (this.files[path]?.type === "directory") {
+      const childFiles = Object.keys(this.files).filter((p) => p.startsWith(path + "/") && p !== path);
+      return `// Directory: ${path}\n// Contents:\n${childFiles.map((c) => `//  - ${c}`).join("\n") || "//  (Empty folder)"}`;
+    }
+
     if (this.files[path]?.content) return this.files[path].content;
+
     const sbx = await this.getSandboxInstance();
     if (sbx) {
       try {
@@ -264,9 +277,6 @@ export class AgentSession extends DurableObject {
     return "";
   }
 
-  /**
-   * Scans VM for all real files AND directories (including empty folders)
-   */
   public async refreshFilesAndFolders(): Promise<{ name: string; path: string; type: "file" | "directory" }[]> {
     const scanScript = `node -e '
       const fs = require("fs");
@@ -277,7 +287,8 @@ export class AgentSession extends DurableObject {
           const entries = fs.readdirSync(dir, { withFileTypes: true });
           let results = [];
           for (const e of entries) {
-            if (e.name.startsWith(".") || e.name === "node_modules" || e.name === "dist") continue;
+            if (e.name.startsWith(".") && e.name !== ".env") continue;
+            if (e.name === "node_modules" || e.name === "dist") continue;
             const rel = path.join(dir, e.name).replace(/^\\.\\/?/, "");
             results.push({ name: e.name, path: rel, type: e.isDirectory() ? "directory" : "file" });
             if (e.isDirectory()) {
@@ -303,7 +314,6 @@ export class AgentSession extends DurableObject {
       } catch {}
     }
 
-    // Virtual storage fallback
     return Object.entries(this.files).map(([p, v]) => ({
       name: p.split("/").pop() || p,
       path: p,
@@ -325,13 +335,11 @@ export class AgentSession extends DurableObject {
       return Response.json({ meta: this.meta, messages: this.messages, envVars: this.envVars }, { headers: corsHeaders });
     }
 
-    // 1. File & Folder Tree Explorer
     if (url.pathname.endsWith("/tree") && request.method === "GET") {
       const tree = await this.refreshFilesAndFolders();
       return Response.json({ tree }, { headers: corsHeaders });
     }
 
-    // 2. File Content Reader
     if (url.pathname.endsWith("/file") && request.method === "POST") {
       const body = (await request.json()) as { filePath?: string };
       const path = body.filePath || "src/App.tsx";
@@ -339,14 +347,12 @@ export class AgentSession extends DurableObject {
       return Response.json({ content: content || "// Empty file" }, { headers: corsHeaders });
     }
 
-    // 3. Save User Submitted Credentials / Env Box
     if (url.pathname.endsWith("/save-env") && request.method === "POST") {
       const body = (await request.json()) as { envVars: Record<string, string> };
       const newVars = body.envVars || {};
       this.envVars = { ...this.envVars, ...newVars };
       await this.ctx.storage.put("envVars", this.envVars);
 
-      // Write into .env in the E2B VM
       const envFileContent = Object.entries(this.envVars)
         .map(([k, v]) => `${k}=${v}`)
         .join("\n");
@@ -355,7 +361,6 @@ export class AgentSession extends DurableObject {
       return Response.json({ success: true, count: Object.keys(this.envVars).length }, { headers: corsHeaders });
     }
 
-    // 4. Interactive Terminal Exec
     if (url.pathname.endsWith("/exec") && request.method === "POST") {
       const body = (await request.json()) as { command?: string; cmd?: string };
       const cmd = body.command || body.cmd || "ls -la";
@@ -372,7 +377,6 @@ export class AgentSession extends DurableObject {
       );
     }
 
-    // 5. Render Live Preview
     if (url.pathname.endsWith("/render-preview")) {
       const appCode = this.files["src/App.tsx"]?.content || "";
       const customCss = this.files["src/index.css"]?.content || "";
@@ -380,7 +384,7 @@ export class AgentSession extends DurableObject {
       return new Response(html, { headers: { "Content-Type": "text/html; charset=UTF-8", ...corsHeaders } });
     }
 
-    // 6. Dynamic ReAct Stream with Env-Box Support
+    // Dynamic ReAct Stream
     if (url.pathname.endsWith("/stream") && request.method === "POST") {
       const body = (await request.json()) as { prompt?: string; sessionId?: string };
       const userPrompt = body.prompt || "Run task";
@@ -444,6 +448,26 @@ export class AgentSession extends DurableObject {
             },
           };
 
+          // Detect Env Box Request directly from prompt
+          const isEnvRequest = /env\s*box|api\s*key|credential|token|secret/i.test(userPrompt);
+          if (isEnvRequest) {
+            const envTemplate = `# ==========================================\n# SOVEREIGN AGENT CREDENTIALS CONFIGURATION\n# ==========================================\nGITHUB_TOKEN=ghp_paste_your_github_token_here\nCLOUDFLARE_API_TOKEN=cfut_paste_your_cloudflare_api_token_here\nCLOUDFLARE_ACCOUNT_ID=1b77c2a9725b1e4c20f52f8ecfadbb3f\nE2B_API_KEY=e2b_paste_your_key_here\nCUSTOM_SECRET=your_secret_value\n`;
+            
+            await this.writeFile(".env", envTemplate);
+
+            const envGroup = await getOrCreateGroup("Credentials & Environment Configuration");
+            const envSub: SubAction = {
+              id: String(subActionCounter++),
+              type: "env_box",
+              title: "Created Interactive .env Configuration Template",
+              status: "completed",
+              output: `==========================================\n🔑 ENVIRONMENT CREDENTIALS TEMPLATE (.env)\n==========================================\n\n${envTemplate}\n[SUCCESS] .env file created in sandbox workspace.\nClick .env in the File Explorer on the right to edit or paste your keys.`,
+            };
+            envGroup.subActions.push(envSub);
+            updateGroupOutput(envGroup);
+            await sendEvent({ actions: [...taskGroups] });
+          }
+
           let isFinished = false;
           let turn = 0;
           const conversationMessages = [
@@ -465,50 +489,13 @@ export class AgentSession extends DurableObject {
 
             console.log(`[Turn ${turn}] AI Output:`, aiResponseText.slice(0, 150));
 
-            // 1. Check for Env-Box Request Tool
-            const envBoxMatch = aiResponseText.match(/<request_env_box\s+title=["']([^"']+)["']>([\s\S]*?)<\/request_env_box>/i);
-            if (envBoxMatch) {
-              const boxTitle = envBoxMatch[1].trim();
-              const fieldsRaw = envBoxMatch[2].trim();
-              const fields: { key: string; label: string; placeholder?: string; type?: string }[] = [];
-              const fieldRegex = /<field\s+key=["']([^"']+)["']\s+label=["']([^"']+)["'](?:\s+placeholder=["']([^"']+)["'])?(?:\s+type=["']([^"']+)["'])?\s*\/>/gi;
-              let fMatch;
-              while ((fMatch = fieldRegex.exec(fieldsRaw)) !== null) {
-                fields.push({
-                  key: fMatch[1],
-                  label: fMatch[2],
-                  placeholder: fMatch[3] || "",
-                  type: fMatch[4] || "text",
-                });
-              }
-
-              const group = await getOrCreateGroup("Credentials & Environment Configuration");
-              const subAction: SubAction = {
-                id: String(subActionCounter++),
-                type: "env_box",
-                title: boxTitle,
-                status: "completed",
-                output: `Env-Box Generated: ${fields.map((f) => f.key).join(", ")}\n[Ready for user input]`,
-                envFields: fields,
-              };
-              group.subActions.push(subAction);
-              updateGroupOutput(group);
-              await sendEvent({ actions: [...taskGroups], type: "env_box_ready", envBox: { title: boxTitle, fields } });
-            }
-
-            // 2. Check for Task Phase Header
-            const phaseMatch = aiResponseText.match(/<task_phase\s+title=["']([^"']+)["']>([\s\S]*?)<\/task_phase>/i);
-            if (phaseMatch) {
-              await getOrCreateGroup(phaseMatch[1].trim());
-            }
-
             const cmdRegex = /<execute_command>([\s\S]*?)<\/execute_command>/gi;
             const writeRegex = /<write_file\s+path=["']([^"']+)["']>([\s\S]*?)<\/write_file>/gi;
             const readRegex = /<read_file\s+path=["']([^"']+)["']\s*\/>/gi;
 
             let hasTools = false;
 
-            // 3. Execute Commands
+            // 1. Execute Commands
             let cmdMatch;
             while ((cmdMatch = cmdRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
@@ -521,7 +508,7 @@ export class AgentSession extends DurableObject {
                 title: `Ran: $ ${cmd.split("\n")[0].slice(0, 50)}`,
                 status: "running",
                 command: cmd,
-                output: `$ ${cmd}\n[E2B VM] Executing...\n`,
+                output: `$ ${cmd}\n[E2B VM] Executing in micro-VM...\n`,
               };
               group.subActions.push(subAction);
               updateGroupOutput(group);
@@ -539,7 +526,7 @@ export class AgentSession extends DurableObject {
               conversationMessages.push({ role: "user", content: `Command Output:\n${fullLog}` });
             }
 
-            // 4. Write Files
+            // 2. Write Files (with automatic folder support)
             let writeMatch;
             while ((writeMatch = writeRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
@@ -569,7 +556,7 @@ export class AgentSession extends DurableObject {
               conversationMessages.push({ role: "user", content: `File ${filePath} written successfully.` });
             }
 
-            // 5. Read Files
+            // 3. Read Files
             let readMatch;
             while ((readMatch = readRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
@@ -598,7 +585,7 @@ export class AgentSession extends DurableObject {
               conversationMessages.push({ role: "user", content: `File Content of ${filePath}:\n${content}` });
             }
 
-            if (!hasTools && !envBoxMatch) {
+            if (!hasTools && !isEnvRequest) {
               const tsxMatch = aiResponseText.match(/```(?:tsx|jsx|typescript|ts)([\s\S]*?)```/i);
               if (tsxMatch) {
                 const group = await getOrCreateGroup("React UI Synthesis");
@@ -621,10 +608,11 @@ export class AgentSession extends DurableObject {
                 await sendEvent({ actions: [...taskGroups] });
               }
               isFinished = true;
+            } else if (isEnvRequest) {
+              isFinished = true;
             }
           }
 
-          // Mark all groups completed
           for (const grp of taskGroups) {
             if (grp.status === "running") {
               grp.status = grp.subActions.some((s) => s.status === "error") ? "error" : "completed";
@@ -632,10 +620,8 @@ export class AgentSession extends DurableObject {
           }
           await sendEvent({ actions: [...taskGroups] });
 
-          // Scan VM and discover all real files AND directories
           await this.refreshFilesAndFolders();
 
-          // Build Live Preview if App.tsx exists
           const appCode = await this.readFile("src/App.tsx");
           const customCss = await this.readFile("src/index.css");
           if (appCode) {
@@ -694,7 +680,7 @@ export default {
         {
           status: "ok",
           worker: "sovereign-agent-replit",
-          architecture: "Cloudflare Workers + Durable Objects + Workers AI + E2B (Folder Tree & Env Box)",
+          architecture: "Cloudflare Workers + Durable Objects + Workers AI + E2B (Folders & Env Protocol)",
           timestamp: new Date().toISOString(),
         },
         { headers: corsHeaders }
