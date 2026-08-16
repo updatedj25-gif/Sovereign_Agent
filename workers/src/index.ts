@@ -37,37 +37,37 @@ export interface TaskGroup {
   subActions: SubAction[];
 }
 
-const SYSTEM_PROMPT = `You are Sovereign Agent, an autonomous software engineer running with bash execution inside an E2B Linux VM.
+const SYSTEM_PROMPT = `You are Sovereign Agent, an autonomous software engineer running inside a real E2B Linux Micro-VM.
+
+You solve tasks by executing tools:
 
 AVAILABLE TOOLS:
-1. Write file (Always use full relative paths including folders):
-<write_file path="folder_name/filename.ext">
-// File contents here
+1. Trigger the Visual Environment Credentials Modal:
+<request_env_box title="Enter your environment variables to continue">
+<field key="GITHUB_TOKEN" label="GitHub Personal Access Token" placeholder="ghp_..." type="password" />
+<field key="CLOUDFLARE_API_TOKEN" label="Cloudflare API Token" placeholder="cfut_..." type="password" />
+<field key="CLOUDFLARE_ACCOUNT_ID" label="Cloudflare Account ID" placeholder="1b77c2a9..." type="text" />
+<field key="E2B_API_KEY" label="E2B API Key" placeholder="e2b_..." type="password" />
+</request_env_box>
+
+2. Write file (Always use full paths):
+<write_file path="folder/filename.ext">
+// File Content
 </write_file>
 
-2. Execute bash command:
+3. Execute bash command:
 <execute_command>
-mkdir -p folder_name && touch folder_name/file.txt
+git clone https://github.com/user/repo.git
 </execute_command>
 
-3. Read file:
-<read_file path="folder_name/file.txt" />
-
-4. Create and Present Environment Credentials Box:
-<write_file path=".env">
-# ==========================================
-# SOVEREIGN AGENT CREDENTIALS CONFIGURATION
-# ==========================================
-GITHUB_TOKEN=ghp_paste_your_github_token_here
-CLOUDFLARE_API_TOKEN=cfut_paste_your_cloudflare_api_token_here
-CLOUDFLARE_ACCOUNT_ID=1b77c2a9725b1e4c20f52f8ecfadbb3f
-E2B_API_KEY=e2b_paste_your_key_here
-</write_file>
+4. Read file:
+<read_file path="filename.ext" />
 
 RULES:
-- When the user asks to create a file inside a folder (e.g. "inside adebola"), write to "<folder>/<filename>" (e.g. path="adebola/data.json" or path="adebola/index.js"). NEVER write to root when a folder is specified.
-- When the user asks for an "env box" or credentials template, create the ".env" file immediately with clean placeholder keys and display the credentials box in your response.
-- When creating UI components, provide complete React 19 + Tailwind CSS in src/App.tsx.`;
+- When the user asks for an env box, or when credentials are needed, use <request_env_box>.
+- When given a GitHub token and asked to clone, save the token to .env and use authenticated git clone: "git clone https://<token>@github.com/<user>/<repo>.git <folder>".
+- When creating files in folders (e.g. inside adebola), write to path="adebola/filename.ext".
+- When creating UI, write modern React 19 + Tailwind CSS code in src/App.tsx.`;
 
 function sanitizeForLivePreview(rawCode: string): string {
   let code = rawCode;
@@ -233,7 +233,6 @@ export class AgentSession extends DurableObject {
   }
 
   public async writeFile(path: string, content: string): Promise<void> {
-    // Automatically register parent directory if path contains subfolders
     if (path.includes("/")) {
       const parentDir = path.substring(0, path.lastIndexOf("/"));
       if (!this.files[parentDir]) {
@@ -277,12 +276,15 @@ export class AgentSession extends DurableObject {
     return "";
   }
 
-  public async refreshFilesAndFolders(): Promise<{ name: string; path: string; type: "file" | "directory" }[]> {
+  /**
+   * Scans VM and returns a hierarchical, VS Code-structured file & folder tree
+   */
+  public async refreshFilesAndFolders(): Promise<any[]> {
     const scanScript = `node -e '
       const fs = require("fs");
       const path = require("path");
       function scan(dir, depth = 0) {
-        if (depth > 4) return [];
+        if (depth > 5) return [];
         try {
           const entries = fs.readdirSync(dir, { withFileTypes: true });
           let results = [];
@@ -290,10 +292,13 @@ export class AgentSession extends DurableObject {
             if (e.name.startsWith(".") && e.name !== ".env") continue;
             if (e.name === "node_modules" || e.name === "dist") continue;
             const rel = path.join(dir, e.name).replace(/^\\.\\/?/, "");
-            results.push({ name: e.name, path: rel, type: e.isDirectory() ? "directory" : "file" });
-            if (e.isDirectory()) {
-              results = results.concat(scan(path.join(dir, e.name), depth + 1));
-            }
+            const isDir = e.isDirectory();
+            results.push({
+              name: e.name,
+              path: rel,
+              type: isDir ? "directory" : "file",
+              children: isDir ? scan(path.join(dir, e.name), depth + 1) : undefined
+            });
           }
           return results;
         } catch (err) { return []; }
@@ -305,11 +310,13 @@ export class AgentSession extends DurableObject {
     if (res.exitCode === 0 && res.stdout) {
       try {
         const items = JSON.parse(res.stdout.trim());
-        for (const item of items) {
-          if (!this.files[item.path]) {
-            this.files[item.path] = { content: "", type: item.type };
+        const flatten = (arr: any[]) => {
+          for (const item of arr) {
+            this.files[item.path] = { content: this.files[item.path]?.content || "", type: item.type };
+            if (item.children) flatten(item.children);
           }
-        }
+        };
+        flatten(items);
         return items;
       } catch {}
     }
@@ -335,11 +342,13 @@ export class AgentSession extends DurableObject {
       return Response.json({ meta: this.meta, messages: this.messages, envVars: this.envVars }, { headers: corsHeaders });
     }
 
+    // 1. VS Code Tree Endpoint
     if (url.pathname.endsWith("/tree") && request.method === "GET") {
       const tree = await this.refreshFilesAndFolders();
       return Response.json({ tree }, { headers: corsHeaders });
     }
 
+    // 2. File Reader
     if (url.pathname.endsWith("/file") && request.method === "POST") {
       const body = (await request.json()) as { filePath?: string };
       const path = body.filePath || "src/App.tsx";
@@ -347,20 +356,23 @@ export class AgentSession extends DurableObject {
       return Response.json({ content: content || "// Empty file" }, { headers: corsHeaders });
     }
 
+    // 3. Save Env Variables into VM & Durable Object
     if (url.pathname.endsWith("/save-env") && request.method === "POST") {
       const body = (await request.json()) as { envVars: Record<string, string> };
       const newVars = body.envVars || {};
       this.envVars = { ...this.envVars, ...newVars };
       await this.ctx.storage.put("envVars", this.envVars);
 
+      // Write into .env
       const envFileContent = Object.entries(this.envVars)
         .map(([k, v]) => `${k}=${v}`)
         .join("\n");
       await this.writeFile(".env", envFileContent);
 
-      return Response.json({ success: true, count: Object.keys(this.envVars).length }, { headers: corsHeaders });
+      return Response.json({ success: true, count: Object.keys(this.envVars).length, envVars: this.envVars }, { headers: corsHeaders });
     }
 
+    // 4. Terminal Exec
     if (url.pathname.endsWith("/exec") && request.method === "POST") {
       const body = (await request.json()) as { command?: string; cmd?: string };
       const cmd = body.command || body.cmd || "ls -la";
@@ -377,6 +389,7 @@ export class AgentSession extends DurableObject {
       );
     }
 
+    // 5. Render Live Preview
     if (url.pathname.endsWith("/render-preview")) {
       const appCode = this.files["src/App.tsx"]?.content || "";
       const customCss = this.files["src/index.css"]?.content || "";
@@ -384,11 +397,18 @@ export class AgentSession extends DurableObject {
       return new Response(html, { headers: { "Content-Type": "text/html; charset=UTF-8", ...corsHeaders } });
     }
 
-    // Dynamic ReAct Stream
+    // 6. Dynamic ReAct Stream
     if (url.pathname.endsWith("/stream") && request.method === "POST") {
       const body = (await request.json()) as { prompt?: string; sessionId?: string };
       const userPrompt = body.prompt || "Run task";
       const sessionId = body.sessionId || "sovereign-session-default";
+
+      // Check if user passed an inline token in their prompt
+      const tokenMatch = userPrompt.match(/([a-zA-Z0-9_-]{20,})/);
+      if (tokenMatch && /github.*token|token.*env/i.test(userPrompt)) {
+        this.envVars["GITHUB_TOKEN"] = tokenMatch[1];
+        await this.ctx.storage.put("envVars", this.envVars);
+      }
 
       this.messages.push({ role: "user", content: userPrompt, timestamp: new Date().toISOString() });
 
@@ -448,24 +468,36 @@ export class AgentSession extends DurableObject {
             },
           };
 
-          // Detect Env Box Request directly from prompt
-          const isEnvRequest = /env\s*box|api\s*key|credential|token|secret/i.test(userPrompt);
-          if (isEnvRequest) {
-            const envTemplate = `# ==========================================\n# SOVEREIGN AGENT CREDENTIALS CONFIGURATION\n# ==========================================\nGITHUB_TOKEN=ghp_paste_your_github_token_here\nCLOUDFLARE_API_TOKEN=cfut_paste_your_cloudflare_api_token_here\nCLOUDFLARE_ACCOUNT_ID=1b77c2a9725b1e4c20f52f8ecfadbb3f\nE2B_API_KEY=e2b_paste_your_key_here\nCUSTOM_SECRET=your_secret_value\n`;
-            
-            await this.writeFile(".env", envTemplate);
+          // Check if User is explicitly requesting Env Box Modal
+          const isEnvModalRequest = /empty\s*env|env\s*box|enter.*env|credentials\s*box/i.test(userPrompt);
+          if (isEnvModalRequest) {
+            const envFields = [
+              { key: "GITHUB_TOKEN", label: "GitHub Personal Access Token", placeholder: "ghp_...", type: "password" },
+              { key: "CLOUDFLARE_API_TOKEN", label: "Cloudflare API Token", placeholder: "cfut_...", type: "password" },
+              { key: "CLOUDFLARE_ACCOUNT_ID", label: "Cloudflare Account ID", placeholder: "1b77c2a9725b1e4c20f52f8ecfadbb3f", type: "text" },
+              { key: "E2B_API_KEY", label: "E2B API Key", placeholder: "e2b_...", type: "password" },
+              { key: "CUSTOM_ENV", label: "Custom Secret", placeholder: "Secret value", type: "password" },
+            ];
 
-            const envGroup = await getOrCreateGroup("Credentials & Environment Configuration");
-            const envSub: SubAction = {
+            const group = await getOrCreateGroup("Environment Credentials Configuration");
+            const subAction: SubAction = {
               id: String(subActionCounter++),
               type: "env_box",
-              title: "Created Interactive .env Configuration Template",
+              title: "Enter your environment variable to continue",
               status: "completed",
-              output: `==========================================\n🔑 ENVIRONMENT CREDENTIALS TEMPLATE (.env)\n==========================================\n\n${envTemplate}\n[SUCCESS] .env file created in sandbox workspace.\nClick .env in the File Explorer on the right to edit or paste your keys.`,
+              output: `[MODAL TRIGGERED] Interactive Env-Box ready for user input.\nFields: ${envFields.map((f) => f.key).join(", ")}`,
             };
-            envGroup.subActions.push(envSub);
-            updateGroupOutput(envGroup);
-            await sendEvent({ actions: [...taskGroups] });
+            group.subActions.push(subAction);
+            updateGroupOutput(group);
+
+            await sendEvent({
+              actions: [...taskGroups],
+              type: "env_modal_open",
+              envBox: {
+                title: "Enter your environment variable to continue",
+                fields: envFields,
+              },
+            });
           }
 
           let isFinished = false;
@@ -499,16 +531,21 @@ export class AgentSession extends DurableObject {
             let cmdMatch;
             while ((cmdMatch = cmdRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
-              const cmd = cmdMatch[1].trim();
-              const group = currentGroup || (await getOrCreateGroup("Workspace Operations"));
+              let cmd = cmdMatch[1].trim();
 
+              // Inject stored GITHUB_TOKEN if cloning private repos
+              if (this.envVars["GITHUB_TOKEN"] && cmd.includes("git clone https://github.com/")) {
+                cmd = cmd.replace("https://github.com/", `https://${this.envVars["GITHUB_TOKEN"]}@github.com/`);
+              }
+
+              const group = currentGroup || (await getOrCreateGroup("Workspace Operations"));
               const subAction: SubAction = {
                 id: String(subActionCounter++),
                 type: "command",
                 title: `Ran: $ ${cmd.split("\n")[0].slice(0, 50)}`,
                 status: "running",
                 command: cmd,
-                output: `$ ${cmd}\n[E2B VM] Executing in micro-VM...\n`,
+                output: `$ ${cmd}\n[E2B VM] Executing...\n`,
               };
               group.subActions.push(subAction);
               updateGroupOutput(group);
@@ -526,7 +563,7 @@ export class AgentSession extends DurableObject {
               conversationMessages.push({ role: "user", content: `Command Output:\n${fullLog}` });
             }
 
-            // 2. Write Files (with automatic folder support)
+            // 2. Write Files
             let writeMatch;
             while ((writeMatch = writeRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
@@ -585,7 +622,7 @@ export class AgentSession extends DurableObject {
               conversationMessages.push({ role: "user", content: `File Content of ${filePath}:\n${content}` });
             }
 
-            if (!hasTools && !isEnvRequest) {
+            if (!hasTools && !isEnvModalRequest) {
               const tsxMatch = aiResponseText.match(/```(?:tsx|jsx|typescript|ts)([\s\S]*?)```/i);
               if (tsxMatch) {
                 const group = await getOrCreateGroup("React UI Synthesis");
@@ -608,7 +645,7 @@ export class AgentSession extends DurableObject {
                 await sendEvent({ actions: [...taskGroups] });
               }
               isFinished = true;
-            } else if (isEnvRequest) {
+            } else if (isEnvModalRequest) {
               isFinished = true;
             }
           }
@@ -680,7 +717,7 @@ export default {
         {
           status: "ok",
           worker: "sovereign-agent-replit",
-          architecture: "Cloudflare Workers + Durable Objects + Workers AI + E2B (Folders & Env Protocol)",
+          architecture: "Cloudflare Workers + Durable Objects + Workers AI + E2B (VS Code Tree & Env Modal)",
           timestamp: new Date().toISOString(),
         },
         { headers: corsHeaders }
