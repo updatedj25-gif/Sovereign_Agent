@@ -19,12 +19,23 @@ export interface SessionMeta {
   };
 }
 
-export interface ActionStep {
+export interface SubAction {
+  id: string;
+  type: "command" | "write_file" | "read_file" | "thought" | "env_box";
+  title: string;
+  status: "pending" | "running" | "completed" | "error";
+  command?: string;
+  output?: string;
+  envFields?: { key: string; label: string; placeholder?: string; type?: string }[];
+}
+
+export interface TaskGroup {
   id: string;
   title: string;
   status: "pending" | "running" | "completed" | "error";
   command: string;
   output: string;
+  subActions: SubAction[];
 }
 
 const SYSTEM_PROMPT = `You are Sovereign Agent, an autonomous software engineer running inside a real E2B Linux Micro-VM.
@@ -32,28 +43,36 @@ const SYSTEM_PROMPT = `You are Sovereign Agent, an autonomous software engineer 
 You solve tasks dynamically by invoking tools:
 
 AVAILABLE TOOLS:
-1. Execute any bash command:
+1. Request an Env Box for credentials/API keys from the user:
+<request_env_box title="Configure Repository & Cloudflare Credentials">
+<field key="GITHUB_TOKEN" label="GitHub Personal Access Token" placeholder="ghp_..." type="password" />
+<field key="CLOUDFLARE_API_TOKEN" label="Cloudflare API Token" placeholder="cfut_..." type="password" />
+<field key="CUSTOM_ENV" label="Custom Environment Variable" placeholder="VALUE" type="text" />
+</request_env_box>
+
+2. Declare a Task Phase Header:
+<task_phase title="Workspace Operations">
+Description of the current phase.
+</task_phase>
+
+3. Execute bash command:
 <execute_command>
-git clone https://github.com/user/repo.git .
+mkdir -p bola && ls -la
 </execute_command>
 
-2. Write file:
+4. Write file:
 <write_file path="src/App.tsx">
 // Complete Code
 </write_file>
 
-3. Read file:
+5. Read file:
 <read_file path="package.json" />
 
-4. List directory:
-<execute_command>
-ls -la
-</execute_command>
-
 RULES:
-- When asked to clone a repository, clone it and inspect the files.
-- When creating UI components, provide complete React 19 + Tailwind CSS code in src/App.tsx.
-- Provide a clear, helpful final response when finished.`;
+- When the user asks for an "env box" or credentials, use the <request_env_box> tool immediately.
+- When creating directories, execute "mkdir <folder>".
+- When building UI, write React 19 + Tailwind CSS code in src/App.tsx.
+- Provide clear summaries of actions taken.`;
 
 function sanitizeForLivePreview(rawCode: string): string {
   let code = rawCode;
@@ -149,7 +168,8 @@ function buildPreviewHtml(appCode: string, rawCss: string, title: string): strin
 export class AgentSession extends DurableObject {
   private messages: ReActMessage[] = [];
   private meta: SessionMeta | null = null;
-  private files: Record<string, string> = {};
+  private files: Record<string, { content: string; type: "file" | "directory" }> = {};
+  private envVars: Record<string, string> = {};
   private previewHtml: string = "";
   private e2bSandboxId: string | null = null;
   private env: Record<string, any>;
@@ -160,13 +180,15 @@ export class AgentSession extends DurableObject {
     this.ctx.blockConcurrencyWhile(async () => {
       const storedMsgs = await this.ctx.storage.get<ReActMessage[]>("messages");
       const storedMeta = await this.ctx.storage.get<SessionMeta>("meta");
-      const storedFiles = await this.ctx.storage.get<Record<string, string>>("files");
+      const storedFiles = await this.ctx.storage.get<Record<string, { content: string; type: "file" | "directory" }>>("files");
+      const storedEnv = await this.ctx.storage.get<Record<string, string>>("envVars");
       const storedPreview = await this.ctx.storage.get<string>("previewHtml");
       const storedSandboxId = await this.ctx.storage.get<string>("e2bSandboxId");
 
       if (storedMsgs) this.messages = storedMsgs;
       if (storedMeta) this.meta = storedMeta;
       if (storedFiles) this.files = storedFiles;
+      if (storedEnv) this.envVars = storedEnv;
       if (storedPreview) this.previewHtml = storedPreview;
       if (storedSandboxId) this.e2bSandboxId = storedSandboxId;
     });
@@ -216,7 +238,7 @@ export class AgentSession extends DurableObject {
   }
 
   public async writeFile(path: string, content: string): Promise<void> {
-    this.files[path] = content;
+    this.files[path] = { content, type: "file" };
     const sbx = await this.getSandboxInstance();
     if (sbx) {
       try {
@@ -228,36 +250,65 @@ export class AgentSession extends DurableObject {
   }
 
   public async readFile(path: string): Promise<string> {
+    if (this.files[path]?.content) return this.files[path].content;
     const sbx = await this.getSandboxInstance();
     if (sbx) {
       try {
         const catRes = await this.runCommand(`cat "${path}"`);
         if (catRes.exitCode === 0 && catRes.stdout) {
-          this.files[path] = catRes.stdout;
+          this.files[path] = { content: catRes.stdout, type: "file" };
           return catRes.stdout;
         }
       } catch {}
     }
-    return this.files[path] || "";
+    return "";
   }
 
   /**
-   * Recursively scans VM for real project files
+   * Scans VM for all real files AND directories (including empty folders)
    */
-  public async refreshFilesFromVM(): Promise<void> {
-    const findRes = await this.runCommand(
-      "find . -maxdepth 4 -type f -not -path '*/.*' -not -path '*node_modules*' -not -path '*/dist/*' -not -name '.bash*' -not -name '.profile'"
-    );
-
-    if (findRes.exitCode === 0 && findRes.stdout) {
-      const paths = findRes.stdout.split("\n").filter((p) => p.trim() && p !== ".");
-      for (const rawPath of paths) {
-        const cleanPath = rawPath.replace(/^\.\//, "");
-        if (!this.files[cleanPath]) {
-          this.files[cleanPath] = "// synchronized from VM";
-        }
+  public async refreshFilesAndFolders(): Promise<{ name: string; path: string; type: "file" | "directory" }[]> {
+    const scanScript = `node -e '
+      const fs = require("fs");
+      const path = require("path");
+      function scan(dir, depth = 0) {
+        if (depth > 4) return [];
+        try {
+          const entries = fs.readdirSync(dir, { withFileTypes: true });
+          let results = [];
+          for (const e of entries) {
+            if (e.name.startsWith(".") || e.name === "node_modules" || e.name === "dist") continue;
+            const rel = path.join(dir, e.name).replace(/^\\.\\/?/, "");
+            results.push({ name: e.name, path: rel, type: e.isDirectory() ? "directory" : "file" });
+            if (e.isDirectory()) {
+              results = results.concat(scan(path.join(dir, e.name), depth + 1));
+            }
+          }
+          return results;
+        } catch (err) { return []; }
       }
+      console.log(JSON.stringify(scan(".")));
+    '`;
+
+    const res = await this.runCommand(scanScript);
+    if (res.exitCode === 0 && res.stdout) {
+      try {
+        const items = JSON.parse(res.stdout.trim());
+        for (const item of items) {
+          if (!this.files[item.path]) {
+            this.files[item.path] = { content: "", type: item.type };
+          }
+        }
+        return items;
+      } catch {}
     }
+
+    // Virtual storage fallback
+    return Object.entries(this.files).map(([p, v]) => ({
+      name: p.split("/").pop() || p,
+      path: p,
+      type: v.type || "file",
+    }));
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -271,34 +322,13 @@ export class AgentSession extends DurableObject {
     if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
     if (url.pathname.endsWith("/history") && request.method === "GET") {
-      return Response.json({ meta: this.meta, messages: this.messages }, { headers: corsHeaders });
+      return Response.json({ meta: this.meta, messages: this.messages, envVars: this.envVars }, { headers: corsHeaders });
     }
 
-    // 1. Recursive File Explorer Tree
+    // 1. File & Folder Tree Explorer
     if (url.pathname.endsWith("/tree") && request.method === "GET") {
-      await this.refreshFilesFromVM();
-
-      // Filter out hidden dotfiles and map to file tree
-      const filteredKeys = Object.keys(this.files).filter(
-        (p) => !p.startsWith(".") && !p.includes("/.") && p !== ".bashrc" && p !== ".profile" && p !== ".bash_logout"
-      );
-
-      let fileList = filteredKeys.map((p) => ({
-        name: p.split("/").pop() || p,
-        path: p,
-        type: "file",
-      }));
-
-      if (fileList.length === 0) {
-        fileList = [
-          { name: "App.tsx", path: "src/App.tsx", type: "file" },
-          { name: "index.css", path: "src/index.css", type: "file" },
-          { name: "index.html", path: "index.html", type: "file" },
-          { name: "package.json", path: "package.json", type: "file" },
-        ];
-      }
-
-      return Response.json({ tree: fileList }, { headers: corsHeaders });
+      const tree = await this.refreshFilesAndFolders();
+      return Response.json({ tree }, { headers: corsHeaders });
     }
 
     // 2. File Content Reader
@@ -306,10 +336,26 @@ export class AgentSession extends DurableObject {
       const body = (await request.json()) as { filePath?: string };
       const path = body.filePath || "src/App.tsx";
       const content = await this.readFile(path);
-      return Response.json({ content: content || "// File empty" }, { headers: corsHeaders });
+      return Response.json({ content: content || "// Empty file" }, { headers: corsHeaders });
     }
 
-    // 3. Terminal Exec
+    // 3. Save User Submitted Credentials / Env Box
+    if (url.pathname.endsWith("/save-env") && request.method === "POST") {
+      const body = (await request.json()) as { envVars: Record<string, string> };
+      const newVars = body.envVars || {};
+      this.envVars = { ...this.envVars, ...newVars };
+      await this.ctx.storage.put("envVars", this.envVars);
+
+      // Write into .env in the E2B VM
+      const envFileContent = Object.entries(this.envVars)
+        .map(([k, v]) => `${k}=${v}`)
+        .join("\n");
+      await this.writeFile(".env", envFileContent);
+
+      return Response.json({ success: true, count: Object.keys(this.envVars).length }, { headers: corsHeaders });
+    }
+
+    // 4. Interactive Terminal Exec
     if (url.pathname.endsWith("/exec") && request.method === "POST") {
       const body = (await request.json()) as { command?: string; cmd?: string };
       const cmd = body.command || body.cmd || "ls -la";
@@ -326,13 +372,15 @@ export class AgentSession extends DurableObject {
       );
     }
 
-    // 4. Render Live Preview
+    // 5. Render Live Preview
     if (url.pathname.endsWith("/render-preview")) {
-      const html = this.previewHtml || buildPreviewHtml(this.files["src/App.tsx"] || "", this.files["src/index.css"] || "", "Live Preview");
+      const appCode = this.files["src/App.tsx"]?.content || "";
+      const customCss = this.files["src/index.css"]?.content || "";
+      const html = this.previewHtml || buildPreviewHtml(appCode, customCss, "Live Preview");
       return new Response(html, { headers: { "Content-Type": "text/html; charset=UTF-8", ...corsHeaders } });
     }
 
-    // 5. Dynamic ReAct Stream
+    // 6. Dynamic ReAct Stream with Env-Box Support
     if (url.pathname.endsWith("/stream") && request.method === "POST") {
       const body = (await request.json()) as { prompt?: string; sessionId?: string };
       const userPrompt = body.prompt || "Run task";
@@ -351,8 +399,38 @@ export class AgentSession extends DurableObject {
       (async () => {
         try {
           const sbx = await this.getSandboxInstance();
-          const dynamicActions: ActionStep[] = [];
-          let actionCounter = 1;
+          const taskGroups: TaskGroup[] = [];
+          let currentGroup: TaskGroup | null = null;
+          let groupCounter = 1;
+          let subActionCounter = 1;
+
+          const getOrCreateGroup = async (title: string): Promise<TaskGroup> => {
+            if (currentGroup && currentGroup.title === title) return currentGroup;
+            if (currentGroup && currentGroup.status === "running") {
+              currentGroup.status = currentGroup.subActions.some((s) => s.status === "error") ? "error" : "completed";
+            }
+            const newGroup: TaskGroup = {
+              id: String(groupCounter++),
+              title,
+              status: "running",
+              command: title,
+              output: "",
+              subActions: [],
+            };
+            taskGroups.push(newGroup);
+            currentGroup = newGroup;
+            await sendEvent({ actions: [...taskGroups] });
+            return newGroup;
+          };
+
+          const updateGroupOutput = (group: TaskGroup) => {
+            group.output = group.subActions
+              .map((s) => {
+                const icon = s.type === "command" ? ">_" : s.type === "write_file" ? "📁" : s.type === "read_file" ? "🔍" : s.type === "env_box" ? "🔑" : "🧠";
+                return `${icon} ${s.title}\n${s.output || ""}`;
+              })
+              .join("\n\n");
+          };
 
           this.meta = {
             id: sessionId,
@@ -387,131 +465,179 @@ export class AgentSession extends DurableObject {
 
             console.log(`[Turn ${turn}] AI Output:`, aiResponseText.slice(0, 150));
 
+            // 1. Check for Env-Box Request Tool
+            const envBoxMatch = aiResponseText.match(/<request_env_box\s+title=["']([^"']+)["']>([\s\S]*?)<\/request_env_box>/i);
+            if (envBoxMatch) {
+              const boxTitle = envBoxMatch[1].trim();
+              const fieldsRaw = envBoxMatch[2].trim();
+              const fields: { key: string; label: string; placeholder?: string; type?: string }[] = [];
+              const fieldRegex = /<field\s+key=["']([^"']+)["']\s+label=["']([^"']+)["'](?:\s+placeholder=["']([^"']+)["'])?(?:\s+type=["']([^"']+)["'])?\s*\/>/gi;
+              let fMatch;
+              while ((fMatch = fieldRegex.exec(fieldsRaw)) !== null) {
+                fields.push({
+                  key: fMatch[1],
+                  label: fMatch[2],
+                  placeholder: fMatch[3] || "",
+                  type: fMatch[4] || "text",
+                });
+              }
+
+              const group = await getOrCreateGroup("Credentials & Environment Configuration");
+              const subAction: SubAction = {
+                id: String(subActionCounter++),
+                type: "env_box",
+                title: boxTitle,
+                status: "completed",
+                output: `Env-Box Generated: ${fields.map((f) => f.key).join(", ")}\n[Ready for user input]`,
+                envFields: fields,
+              };
+              group.subActions.push(subAction);
+              updateGroupOutput(group);
+              await sendEvent({ actions: [...taskGroups], type: "env_box_ready", envBox: { title: boxTitle, fields } });
+            }
+
+            // 2. Check for Task Phase Header
+            const phaseMatch = aiResponseText.match(/<task_phase\s+title=["']([^"']+)["']>([\s\S]*?)<\/task_phase>/i);
+            if (phaseMatch) {
+              await getOrCreateGroup(phaseMatch[1].trim());
+            }
+
             const cmdRegex = /<execute_command>([\s\S]*?)<\/execute_command>/gi;
             const writeRegex = /<write_file\s+path=["']([^"']+)["']>([\s\S]*?)<\/write_file>/gi;
             const readRegex = /<read_file\s+path=["']([^"']+)["']\s*\/>/gi;
 
             let hasTools = false;
 
-            // Execute Commands
+            // 3. Execute Commands
             let cmdMatch;
             while ((cmdMatch = cmdRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
               const cmd = cmdMatch[1].trim();
-              const actionId = String(actionCounter++);
-              const action: ActionStep = {
-                id: actionId,
-                title: `Execute: $ ${cmd.split("\n")[0].slice(0, 45)}`,
+              const group = currentGroup || (await getOrCreateGroup("Workspace Operations"));
+
+              const subAction: SubAction = {
+                id: String(subActionCounter++),
+                type: "command",
+                title: `Ran: $ ${cmd.split("\n")[0].slice(0, 50)}`,
                 status: "running",
                 command: cmd,
-                output: `$ ${cmd}\n[E2B VM] Executing in micro-VM...\n`,
+                output: `$ ${cmd}\n[E2B VM] Executing...\n`,
               };
-              dynamicActions.push(action);
-              await sendEvent({ actions: [...dynamicActions] });
+              group.subActions.push(subAction);
+              updateGroupOutput(group);
+              await sendEvent({ actions: [...taskGroups] });
 
               const cmdResult = await this.runCommand(cmd);
               const fullLog = `$ ${cmd}\n${cmdResult.stdout || ""}${cmdResult.stderr ? `\n[STDERR]\n${cmdResult.stderr}` : ""}\n[Exit Code: ${cmdResult.exitCode}]`;
 
-              action.status = cmdResult.exitCode === 0 ? "completed" : "error";
-              action.output = fullLog;
-              await sendEvent({ actions: [...dynamicActions] });
+              subAction.status = cmdResult.exitCode === 0 ? "completed" : "error";
+              subAction.output = fullLog;
+              updateGroupOutput(group);
+              await sendEvent({ actions: [...taskGroups] });
 
               conversationMessages.push({ role: "assistant", content: `<execute_command>${cmd}</execute_command>` });
               conversationMessages.push({ role: "user", content: `Command Output:\n${fullLog}` });
             }
 
-            // Write Files
+            // 4. Write Files
             let writeMatch;
             while ((writeMatch = writeRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
               const filePath = writeMatch[1].trim();
               const content = writeMatch[2].trim();
-              const actionId = String(actionCounter++);
-              const action: ActionStep = {
-                id: actionId,
-                title: `Write File: ${filePath}`,
+              const group = currentGroup || (await getOrCreateGroup("File Assembly"));
+
+              const subAction: SubAction = {
+                id: String(subActionCounter++),
+                type: "write_file",
+                title: `Wrote: ${filePath}`,
                 status: "running",
                 command: `write_file ${filePath}`,
                 output: `Writing ${content.length} bytes to ${filePath}...`,
               };
-              dynamicActions.push(action);
-              await sendEvent({ actions: [...dynamicActions] });
+              group.subActions.push(subAction);
+              updateGroupOutput(group);
+              await sendEvent({ actions: [...taskGroups] });
 
               await this.writeFile(filePath, content);
-              action.status = "completed";
-              action.output = `[SUCCESS] Created ${filePath} (${content.length} bytes)`;
-              await sendEvent({ actions: [...dynamicActions] });
+              subAction.status = "completed";
+              subAction.output = `[SUCCESS] Created ${filePath} (${content.length} bytes)`;
+              updateGroupOutput(group);
+              await sendEvent({ actions: [...taskGroups] });
 
               conversationMessages.push({ role: "assistant", content: `<write_file path="${filePath}">...</write_file>` });
               conversationMessages.push({ role: "user", content: `File ${filePath} written successfully.` });
             }
 
-            // Read Files
+            // 5. Read Files
             let readMatch;
             while ((readMatch = readRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
               const filePath = readMatch[1].trim();
-              const actionId = String(actionCounter++);
-              const action: ActionStep = {
-                id: actionId,
-                title: `Read File: ${filePath}`,
+              const group = currentGroup || (await getOrCreateGroup("File Inspection"));
+
+              const subAction: SubAction = {
+                id: String(subActionCounter++),
+                type: "read_file",
+                title: `Read: ${filePath}`,
                 status: "running",
                 command: `cat ${filePath}`,
                 output: `Reading ${filePath}...`,
               };
-              dynamicActions.push(action);
-              await sendEvent({ actions: [...dynamicActions] });
+              group.subActions.push(subAction);
+              updateGroupOutput(group);
+              await sendEvent({ actions: [...taskGroups] });
 
               const content = await this.readFile(filePath);
-              action.status = "completed";
-              action.output = content ? content.slice(0, 800) : "[File empty or not found]";
-              await sendEvent({ actions: [...dynamicActions] });
+              subAction.status = "completed";
+              subAction.output = content ? content.slice(0, 800) : "[File empty or not found]";
+              updateGroupOutput(group);
+              await sendEvent({ actions: [...taskGroups] });
 
               conversationMessages.push({ role: "assistant", content: `<read_file path="${filePath}" />` });
               conversationMessages.push({ role: "user", content: `File Content of ${filePath}:\n${content}` });
             }
 
-            if (!hasTools) {
+            if (!hasTools && !envBoxMatch) {
               const tsxMatch = aiResponseText.match(/```(?:tsx|jsx|typescript|ts)([\s\S]*?)```/i);
               if (tsxMatch) {
-                const actionId = String(actionCounter++);
-                const action: ActionStep = {
-                  id: actionId,
-                  title: `Generate Component: src/App.tsx`,
+                const group = await getOrCreateGroup("React UI Synthesis");
+                const subAction: SubAction = {
+                  id: String(subActionCounter++),
+                  type: "write_file",
+                  title: "Created src/App.tsx",
                   status: "running",
                   command: "synthesize src/App.tsx",
-                  output: "Writing synthesized UI component...",
+                  output: "Writing synthesized UI...",
                 };
-                dynamicActions.push(action);
-                await sendEvent({ actions: [...dynamicActions] });
+                group.subActions.push(subAction);
+                updateGroupOutput(group);
+                await sendEvent({ actions: [...taskGroups] });
 
                 await this.writeFile("src/App.tsx", tsxMatch[1].trim());
-                action.status = "completed";
-                action.output = `[SUCCESS] Created src/App.tsx`;
-                await sendEvent({ actions: [...dynamicActions] });
+                subAction.status = "completed";
+                subAction.output = `[SUCCESS] Created src/App.tsx (${tsxMatch[1].trim().length} bytes)`;
+                updateGroupOutput(group);
+                await sendEvent({ actions: [...taskGroups] });
               }
               isFinished = true;
             }
           }
 
-          // Scan VM and update File Explorer Tree
-          await this.refreshFilesFromVM();
-
-          // Auto-detect App.tsx anywhere in workspace (root or cloned repos)
-          let appCode = await this.readFile("src/App.tsx");
-          if (!appCode) {
-            const possibleAppPaths = Object.keys(this.files).filter((p) => p.endsWith("App.tsx") || p.endsWith("App.jsx"));
-            if (possibleAppPaths.length > 0) {
-              appCode = await this.readFile(possibleAppPaths[0]);
+          // Mark all groups completed
+          for (const grp of taskGroups) {
+            if (grp.status === "running") {
+              grp.status = grp.subActions.some((s) => s.status === "error") ? "error" : "completed";
             }
           }
+          await sendEvent({ actions: [...taskGroups] });
 
-          let customCss = await this.readFile("src/index.css");
-          if (!customCss) {
-            const possibleCss = Object.keys(this.files).filter((p) => p.endsWith("index.css") || p.endsWith("App.css"));
-            if (possibleCss.length > 0) customCss = await this.readFile(possibleCss[0]);
-          }
+          // Scan VM and discover all real files AND directories
+          await this.refreshFilesAndFolders();
 
+          // Build Live Preview if App.tsx exists
+          const appCode = await this.readFile("src/App.tsx");
+          const customCss = await this.readFile("src/index.css");
           if (appCode) {
             this.previewHtml = buildPreviewHtml(appCode, customCss, userPrompt);
           }
@@ -520,13 +646,6 @@ export class AgentSession extends DurableObject {
           await this.ctx.storage.put("previewHtml", this.previewHtml);
           await this.ctx.storage.put("meta", this.meta);
           await this.ctx.storage.put("messages", this.messages);
-
-          if (this.env.SOVEREIGN_KV) {
-            await this.env.SOVEREIGN_KV.put(`preview_html_${sessionId}`, this.previewHtml);
-            for (const [p, c] of Object.entries(this.files)) {
-              await this.env.SOVEREIGN_KV.put(`code_${sessionId}_${p}`, c);
-            }
-          }
 
           const previewUrl = `/api/sandbox/render-preview?sessionId=${encodeURIComponent(sessionId)}`;
           await sendEvent({ type: "preview_ready", previewUrl });
@@ -575,7 +694,7 @@ export default {
         {
           status: "ok",
           worker: "sovereign-agent-replit",
-          architecture: "Cloudflare Workers + Durable Objects + Workers AI + Official E2B SDK",
+          architecture: "Cloudflare Workers + Durable Objects + Workers AI + E2B (Folder Tree & Env Box)",
           timestamp: new Date().toISOString(),
         },
         { headers: corsHeaders }
@@ -616,11 +735,11 @@ export default {
       return stub.fetch(new Request("https://session-do/stream", request));
     }
 
-    if (url.pathname === "/api/sandbox/exec" && request.method === "POST") {
+    if (url.pathname === "/api/sandbox/save-env" && request.method === "POST") {
       const body = (await request.clone().json()) as { sessionId?: string };
       const sessionId = body.sessionId || "sovereign-session-default";
       const stub = getSessionStub(sessionId);
-      return stub.fetch(new Request("https://session-do/exec", request));
+      return stub.fetch(new Request("https://session-do/save-env", request));
     }
 
     if (url.pathname === "/api/sandbox/tree") {
@@ -634,6 +753,13 @@ export default {
       const sessionId = body.sessionId || "sovereign-session-default";
       const stub = getSessionStub(sessionId);
       return stub.fetch(new Request("https://session-do/file", request));
+    }
+
+    if (url.pathname === "/api/sandbox/exec" && request.method === "POST") {
+      const body = (await request.clone().json()) as { sessionId?: string };
+      const sessionId = body.sessionId || "sovereign-session-default";
+      const stub = getSessionStub(sessionId);
+      return stub.fetch(new Request("https://session-do/exec", request));
     }
 
     if (url.pathname === "/api/sandbox/render-preview") {
