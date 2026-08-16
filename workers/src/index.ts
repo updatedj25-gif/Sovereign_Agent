@@ -37,41 +37,17 @@ export interface TaskGroup {
   subActions: SubAction[];
 }
 
-const SYSTEM_PROMPT = `You are Sovereign Agent, an autonomous software engineer running inside a real E2B Linux VM.
+const SYSTEM_PROMPT = `You are Sovereign Agent, a Senior Staff Software Engineer and UI Architect.
+You generate production-ready code with complete styling and interactivity.
 
-You solve tasks by executing tools organized into clear milestones:
-
-TOOLS:
-1. Declare a milestone phase:
-<task_phase title="Directory & File Assembly">
-Short explanation of what will be done.
-</task_phase>
-
-2. Write file (ALWAYS specify full nested paths):
-<write_file path="adebola/config.json">
-{
-  "status": "active"
-}
-</write_file>
-
-3. Execute bash command:
-<execute_command>
-mkdir -p adebola && ls -la adebola
-</execute_command>
-
-4. Read file:
-<read_file path="adebola/config.json" />
-
-5. Trigger Env Box modal:
-<request_env_box title="Enter your environment variable to continue">
-<field key="GITHUB_TOKEN" label="GitHub Personal Access Token" placeholder="ghp_..." type="password" />
-<field key="CLOUDFLARE_API_TOKEN" label="Cloudflare API Token" placeholder="cfut_..." type="password" />
-</request_env_box>
-
-CRITICAL RULES FOR PATHS:
-- If asked to create a file inside a folder (e.g. "create data.json inside adebola" or "create a file in folder X"), path MUST BE "adebola/data.json". NEVER write to root when a target folder is requested.
-- Always execute "mkdir -p <folder>" before or alongside writing nested files.
-- Always verify your work by running "ls -la <folder>" after creating files.`;
+RULES FOR CODE SYNTHESIS:
+1. ALWAYS write your main runnable component into "src/App.tsx" so it renders immediately in the Live Preview.
+2. When asked for "React Native" or mobile apps:
+   - Build a gorgeous mobile device mockup container in React (Tailwind mobile phone frame with rounded-3xl border, notch, and status bar).
+   - If wine background is requested, use rich wine/burgundy tones (e.g. bg-[#4A0E17], bg-[#58111A], or bg-gradient-to-b from-[#3B0A11] to-[#721B28]).
+   - Build full interactive features (chat bubbles, input bar, send button, active timestamps, avatars).
+3. Do not run "react-native run-android" or "run-ios" as the micro-VM is a headless Linux web environment. Use "src/App.tsx" with standard React/Tailwind.
+4. Output your complete component in a \`\`\`tsx ... \`\`\` code block.`;
 
 function sanitizeForLivePreview(rawCode: string): string {
   let code = rawCode;
@@ -86,7 +62,9 @@ function sanitizeForLivePreview(rawCode: string): string {
   const declaredComponents: string[] = [];
   const compMatches = code.matchAll(/(?:const|function|let|var)\s+([A-Z]\w+)/g);
   for (const m of compMatches) {
-    declaredComponents.push(m[1]);
+    if (!["React", "ReactDOM", "View", "Text", "TouchableOpacity", "TextInput", "ScrollView", "Image", "StyleSheet"].includes(m[1])) {
+      declaredComponents.push(m[1]);
+    }
   }
 
   if (!code.includes("function App") && !code.includes("const App") && !code.includes("let App") && !code.includes("var App")) {
@@ -97,6 +75,9 @@ function sanitizeForLivePreview(rawCode: string): string {
   return code;
 }
 
+/**
+ * Robust HTML Builder with React Native Web Polyfills & Lucide Icons
+ */
 function buildPreviewHtml(appCode: string, rawCss: string, title: string): string {
   const sanitizedCode = sanitizeForLivePreview(appCode);
   const cleanCss = (rawCss || "").replace(/@import\s+["']tailwindcss["'];?/g, "");
@@ -113,16 +94,27 @@ function buildPreviewHtml(appCode: string, rawCss: string, title: string): strin
   <script src="https://unpkg.com/@babel/standalone@7.24.0/babel.min.js"></script>
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
   <style>
-    body { margin: 0; padding: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    body { margin: 0; padding: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #030712; }
     ${cleanCss}
   </style>
 </head>
-<body class="bg-slate-950 text-white min-h-screen">
-  <div id="root"></div>
+<body class="bg-slate-950 text-white min-h-screen flex items-center justify-center p-4">
+  <div id="root" class="w-full flex items-center justify-center"></div>
   <div id="preview-error" class="hidden m-4 p-4 rounded-xl bg-red-950/90 border border-red-500/50 text-red-200 font-mono text-xs whitespace-pre-wrap"></div>
   
   <script type="text/babel" data-presets="react,typescript">
     const { useState, useEffect, useRef, useMemo, useCallback, useReducer, useContext, createContext } = React;
+
+    // React Native Web Polyfills
+    const View = (props) => <div {...props} className={props.className || ''} style={props.style}>{props.children}</div>;
+    const Text = (props) => <span {...props} className={props.className || ''} style={props.style}>{props.children}</span>;
+    const TouchableOpacity = (props) => <button {...props} className={props.className || ''} style={props.style} onClick={props.onPress || props.onClick}>{props.children}</button>;
+    const TextInput = (props) => <input {...props} className={props.className || ''} style={props.style} onChange={(e) => props.onChangeText ? props.onChangeText(e.target.value) : (props.onChange && props.onChange(e))} />;
+    const ScrollView = (props) => <div {...props} className={'overflow-y-auto ' + (props.className || '')} style={props.style}>{props.children}</div>;
+    const Image = (props) => <img {...props} src={props.source?.uri || props.src || ''} className={props.className || ''} style={props.style} />;
+    const SafeAreaView = View;
+    const StatusBar = () => null;
+    const StyleSheet = { create: (s) => s };
 
     window.onerror = function(msg, url, line) {
       const errEl = document.getElementById('preview-error');
@@ -239,7 +231,6 @@ export class AgentSession extends DurableObject {
   public async writeFile(rawPath: string, content: string): Promise<void> {
     const cleanPath = rawPath.replace(/^\.\//, "").replace(/^\/+/, "");
     
-    // Auto-create parent directories in virtual memory
     if (cleanPath.includes("/")) {
       const parts = cleanPath.split("/");
       let currentDir = "";
@@ -330,7 +321,6 @@ export class AgentSession extends DurableObject {
       } catch {}
     }
 
-    // Build hierarchical tree from virtual memory
     const rootNodes: any[] = [];
     const nodeMap: Record<string, any> = {};
 
@@ -410,24 +400,28 @@ export class AgentSession extends DurableObject {
     }
 
     if (url.pathname.endsWith("/render-preview")) {
-      const appCode = this.files["src/App.tsx"]?.content || "";
-      const customCss = this.files["src/index.css"]?.content || "";
-      const html = this.previewHtml || buildPreviewHtml(appCode, customCss, "Live Preview");
+      let appCode = await this.readFile("src/App.tsx");
+      if (!appCode) {
+        // Universal search for any created app file
+        const candidates = Object.keys(this.files).filter((p) => p.endsWith(".tsx") || p.endsWith(".jsx") || p.endsWith(".js") || p.endsWith(".ts"));
+        for (const c of candidates) {
+          const cCode = await this.readFile(c);
+          if (cCode && (cCode.includes("function") || cCode.includes("const") || cCode.includes("return"))) {
+            appCode = cCode;
+            break;
+          }
+        }
+      }
+      const customCss = (await this.readFile("src/index.css")) || "";
+      const html = buildPreviewHtml(appCode || "export default function App() { return <div className='p-8 text-center text-amber-400'>App Loaded</div>; }", customCss, "Live Preview");
       return new Response(html, { headers: { "Content-Type": "text/html; charset=UTF-8", ...corsHeaders } });
     }
 
-    // Dynamic Multi-Turn ReAct Stream with Nested Subtask Accordions
+    // Dynamic Multi-Turn ReAct Stream
     if (url.pathname.endsWith("/stream") && request.method === "POST") {
       const body = (await request.json()) as { prompt?: string; sessionId?: string };
       const userPrompt = body.prompt || "Run task";
       const sessionId = body.sessionId || "sovereign-session-default";
-
-      // Detect folder intent from prompt
-      let targetFolder = "";
-      const folderMatch = userPrompt.match(/inside\s+([a-zA-Z0-9_-]+)|in\s+folder\s+([a-zA-Z0-9_-]+)/i);
-      if (folderMatch) {
-        targetFolder = folderMatch[1] || folderMatch[2];
-      }
 
       this.messages.push({ role: "user", content: userPrompt, timestamp: new Date().toISOString() });
 
@@ -484,37 +478,6 @@ export class AgentSession extends DurableObject {
             },
           };
 
-          const isEnvModalRequest = /empty\s*env|env\s*box|enter.*env|credentials\s*box/i.test(userPrompt);
-          if (isEnvModalRequest) {
-            const envFields = [
-              { key: "GITHUB_TOKEN", label: "GitHub Personal Access Token", placeholder: "ghp_...", type: "password" },
-              { key: "CLOUDFLARE_API_TOKEN", label: "Cloudflare API Token", placeholder: "cfut_...", type: "password" },
-              { key: "CLOUDFLARE_ACCOUNT_ID", label: "Cloudflare Account ID", placeholder: "1b77c2a9...", type: "text" },
-              { key: "E2B_API_KEY", label: "E2B API Key", placeholder: "e2b_...", type: "password" },
-              { key: "CUSTOM_SECRET", label: "Custom Secret", placeholder: "Secret value", type: "password" },
-            ];
-
-            const group = await getOrCreateGroup("Environment Credentials Configuration");
-            const subAction: SubAction = {
-              id: String(subActionCounter++),
-              type: "env_box",
-              title: "Triggered Environment Modal for User Credentials",
-              status: "completed",
-              output: `[MODAL OPENED] Please input your API keys and click Apply.`,
-            };
-            group.subActions.push(subAction);
-            updateGroupOutput(group);
-
-            await sendEvent({
-              actions: [...taskGroups],
-              type: "env_modal_open",
-              envBox: {
-                title: "Enter your environment variable to continue",
-                fields: envFields,
-              },
-            });
-          }
-
           let isFinished = false;
           let turn = 0;
           const conversationMessages = [
@@ -536,7 +499,6 @@ export class AgentSession extends DurableObject {
 
             console.log(`[Turn ${turn}] AI Output:`, aiResponseText.slice(0, 150));
 
-            // Parse custom phase header
             const phaseMatch = aiResponseText.match(/<task_phase\s+title=["']([^"']+)["']>([\s\S]*?)<\/task_phase>/i);
             if (phaseMatch) {
               await getOrCreateGroup(phaseMatch[1].trim());
@@ -548,11 +510,16 @@ export class AgentSession extends DurableObject {
 
             let hasTools = false;
 
-            // 1. Execute Command Sub-Actions
+            // 1. Execute Command
             let cmdMatch;
             while ((cmdMatch = cmdRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
               let cmd = cmdMatch[1].trim();
+
+              // Prevent crashing on native mobile commands in web micro-VM
+              if (cmd.includes("run-android") || cmd.includes("run-ios")) {
+                cmd = "echo '[PREVIEW] React Native web simulator ready. Rendering mobile viewport in Live Preview.'";
+              }
 
               const group = currentGroup || (await getOrCreateGroup("Workspace Operations"));
               const subAction: SubAction = {
@@ -579,19 +546,14 @@ export class AgentSession extends DurableObject {
               conversationMessages.push({ role: "user", content: `Command Output:\n${fullLog}` });
             }
 
-            // 2. Write File Sub-Actions with Folder Resolution
+            // 2. Write File
             let writeMatch;
             while ((writeMatch = writeRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
               let filePath = writeMatch[1].trim();
               const content = writeMatch[2].trim();
 
-              // Auto-prefix target folder if requested by user but omitted by LLM
-              if (targetFolder && !filePath.startsWith(targetFolder + "/") && filePath !== ".env") {
-                filePath = `${targetFolder}/${filePath}`;
-              }
-
-              const group = currentGroup || (await getOrCreateGroup("Directory & File Assembly"));
+              const group = currentGroup || (await getOrCreateGroup("Component Assembly"));
               const subAction: SubAction = {
                 id: String(subActionCounter++),
                 type: "write_file",
@@ -605,6 +567,11 @@ export class AgentSession extends DurableObject {
               await sendEvent({ actions: [...taskGroups] });
 
               await this.writeFile(filePath, content);
+              // Mirror to src/App.tsx if it's the primary App component
+              if (filePath.endsWith("App.js") || filePath.endsWith("App.jsx") || filePath.endsWith("App.tsx") || filePath.endsWith("src.ts")) {
+                await this.writeFile("src/App.tsx", content);
+              }
+
               subAction.status = "completed";
               subAction.output = `[SUCCESS] Created ${filePath} (${content.length} bytes)`;
               updateGroupOutput(group);
@@ -614,7 +581,7 @@ export class AgentSession extends DurableObject {
               conversationMessages.push({ role: "user", content: `File ${filePath} written successfully.` });
             }
 
-            // 3. Read File Sub-Actions
+            // 3. Read File
             let readMatch;
             while ((readMatch = readRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
@@ -643,10 +610,10 @@ export class AgentSession extends DurableObject {
               conversationMessages.push({ role: "user", content: `File Content of ${filePath}:\n${content}` });
             }
 
-            if (!hasTools && !isEnvModalRequest) {
-              const tsxMatch = aiResponseText.match(/```(?:tsx|jsx|typescript|ts)([\s\S]*?)```/i);
+            if (!hasTools) {
+              const tsxMatch = aiResponseText.match(/```(?:tsx|jsx|typescript|ts|javascript|js)([\s\S]*?)```/i);
               if (tsxMatch) {
-                const group = await getOrCreateGroup("React UI Synthesis");
+                const group = await getOrCreateGroup("UI Synthesis");
                 const subAction: SubAction = {
                   id: String(subActionCounter++),
                   type: "write_file",
@@ -666,8 +633,6 @@ export class AgentSession extends DurableObject {
                 await sendEvent({ actions: [...taskGroups] });
               }
               isFinished = true;
-            } else if (isEnvModalRequest) {
-              isFinished = true;
             }
           }
 
@@ -680,8 +645,20 @@ export class AgentSession extends DurableObject {
 
           await this.refreshFilesAndFolders();
 
-          const appCode = await this.readFile("src/App.tsx");
-          const customCss = await this.readFile("src/index.css");
+          // Universal Preview Resolution
+          let appCode = await this.readFile("src/App.tsx");
+          if (!appCode) {
+            const candidates = Object.keys(this.files).filter((p) => p.endsWith(".tsx") || p.endsWith(".jsx") || p.endsWith(".js") || p.endsWith(".ts"));
+            for (const c of candidates) {
+              const cCode = await this.readFile(c);
+              if (cCode && (cCode.includes("function") || cCode.includes("const") || cCode.includes("return"))) {
+                appCode = cCode;
+                break;
+              }
+            }
+          }
+
+          const customCss = (await this.readFile("src/index.css")) || "";
           if (appCode) {
             this.previewHtml = buildPreviewHtml(appCode, customCss, userPrompt);
           }
@@ -738,7 +715,7 @@ export default {
         {
           status: "ok",
           worker: "sovereign-agent-replit",
-          architecture: "Cloudflare Workers + Durable Objects + Workers AI + E2B (Nested Accordions & Path Resolver)",
+          architecture: "Cloudflare Workers + Durable Objects + Workers AI + E2B Polyfill Engine",
           timestamp: new Date().toISOString(),
         },
         { headers: corsHeaders }
