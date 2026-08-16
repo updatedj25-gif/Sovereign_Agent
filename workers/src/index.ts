@@ -37,37 +37,41 @@ export interface TaskGroup {
   subActions: SubAction[];
 }
 
-const SYSTEM_PROMPT = `You are Sovereign Agent, an autonomous software engineer running inside a real E2B Linux Micro-VM.
+const SYSTEM_PROMPT = `You are Sovereign Agent, an autonomous software engineer running inside a real E2B Linux VM.
 
-You solve tasks by executing tools:
+You solve tasks by executing tools organized into clear milestones:
 
-AVAILABLE TOOLS:
-1. Trigger the Visual Environment Credentials Modal:
-<request_env_box title="Enter your environment variables to continue">
-<field key="GITHUB_TOKEN" label="GitHub Personal Access Token" placeholder="ghp_..." type="password" />
-<field key="CLOUDFLARE_API_TOKEN" label="Cloudflare API Token" placeholder="cfut_..." type="password" />
-<field key="CLOUDFLARE_ACCOUNT_ID" label="Cloudflare Account ID" placeholder="1b77c2a9..." type="text" />
-<field key="E2B_API_KEY" label="E2B API Key" placeholder="e2b_..." type="password" />
-</request_env_box>
+TOOLS:
+1. Declare a milestone phase:
+<task_phase title="Directory & File Assembly">
+Short explanation of what will be done.
+</task_phase>
 
-2. Write file (Always use full paths):
-<write_file path="folder/filename.ext">
-// File Content
+2. Write file (ALWAYS specify full nested paths):
+<write_file path="adebola/config.json">
+{
+  "status": "active"
+}
 </write_file>
 
 3. Execute bash command:
 <execute_command>
-git clone https://github.com/user/repo.git
+mkdir -p adebola && ls -la adebola
 </execute_command>
 
 4. Read file:
-<read_file path="filename.ext" />
+<read_file path="adebola/config.json" />
 
-RULES:
-- When the user asks for an env box, or when credentials are needed, use <request_env_box>.
-- When given a GitHub token and asked to clone, save the token to .env and use authenticated git clone: "git clone https://<token>@github.com/<user>/<repo>.git <folder>".
-- When creating files in folders (e.g. inside adebola), write to path="adebola/filename.ext".
-- When creating UI, write modern React 19 + Tailwind CSS code in src/App.tsx.`;
+5. Trigger Env Box modal:
+<request_env_box title="Enter your environment variable to continue">
+<field key="GITHUB_TOKEN" label="GitHub Personal Access Token" placeholder="ghp_..." type="password" />
+<field key="CLOUDFLARE_API_TOKEN" label="Cloudflare API Token" placeholder="cfut_..." type="password" />
+</request_env_box>
+
+CRITICAL RULES FOR PATHS:
+- If asked to create a file inside a folder (e.g. "create data.json inside adebola" or "create a file in folder X"), path MUST BE "adebola/data.json". NEVER write to root when a target folder is requested.
+- Always execute "mkdir -p <folder>" before or alongside writing nested files.
+- Always verify your work by running "ls -la <folder>" after creating files.`;
 
 function sanitizeForLivePreview(rawCode: string): string {
   let code = rawCode;
@@ -232,43 +236,51 @@ export class AgentSession extends DurableObject {
     return { stdout: `[Virtual DO] Executed: ${cmd}`, stderr: "", exitCode: 0, mode: "Virtual DO" };
   }
 
-  public async writeFile(path: string, content: string): Promise<void> {
-    if (path.includes("/")) {
-      const parentDir = path.substring(0, path.lastIndexOf("/"));
-      if (!this.files[parentDir]) {
-        this.files[parentDir] = { content: "", type: "directory" };
+  public async writeFile(rawPath: string, content: string): Promise<void> {
+    const cleanPath = rawPath.replace(/^\.\//, "").replace(/^\/+/, "");
+    
+    // Auto-create parent directories in virtual memory
+    if (cleanPath.includes("/")) {
+      const parts = cleanPath.split("/");
+      let currentDir = "";
+      for (let i = 0; i < parts.length - 1; i++) {
+        currentDir = currentDir ? `${currentDir}/${parts[i]}` : parts[i];
+        this.files[currentDir] = { content: "", type: "directory" };
       }
     }
 
-    this.files[path] = { content, type: "file" };
+    this.files[cleanPath] = { content, type: "file" };
+
     const sbx = await this.getSandboxInstance();
     if (sbx) {
       try {
-        if (path.includes("/")) {
-          const parentDir = path.substring(0, path.lastIndexOf("/"));
+        if (cleanPath.includes("/")) {
+          const parentDir = cleanPath.substring(0, cleanPath.lastIndexOf("/"));
           await sbx.commands.run(`mkdir -p "${parentDir}"`);
         }
-        await sbx.files.write(path, content);
+        await sbx.files.write(cleanPath, content);
       } catch (err: any) {
-        console.error(`[E2B Write Error ${path}]:`, err.message);
+        console.error(`[E2B Write Error ${cleanPath}]:`, err.message);
       }
     }
   }
 
-  public async readFile(path: string): Promise<string> {
-    if (this.files[path]?.type === "directory") {
-      const childFiles = Object.keys(this.files).filter((p) => p.startsWith(path + "/") && p !== path);
-      return `// Directory: ${path}\n// Contents:\n${childFiles.map((c) => `//  - ${c}`).join("\n") || "//  (Empty folder)"}`;
+  public async readFile(rawPath: string): Promise<string> {
+    const cleanPath = rawPath.replace(/^\.\//, "").replace(/^\/+/, "");
+
+    if (this.files[cleanPath]?.type === "directory") {
+      const childFiles = Object.keys(this.files).filter((p) => p.startsWith(cleanPath + "/") && p !== cleanPath);
+      return `// Directory: ${cleanPath}\n// Child Items:\n${childFiles.map((c) => `//  - ${c}`).join("\n") || "//  (Empty directory)"}`;
     }
 
-    if (this.files[path]?.content) return this.files[path].content;
+    if (this.files[cleanPath]?.content) return this.files[cleanPath].content;
 
     const sbx = await this.getSandboxInstance();
     if (sbx) {
       try {
-        const catRes = await this.runCommand(`cat "${path}"`);
+        const catRes = await this.runCommand(`cat "${cleanPath}"`);
         if (catRes.exitCode === 0 && catRes.stdout) {
-          this.files[path] = { content: catRes.stdout, type: "file" };
+          this.files[cleanPath] = { content: catRes.stdout, type: "file" };
           return catRes.stdout;
         }
       } catch {}
@@ -276,9 +288,6 @@ export class AgentSession extends DurableObject {
     return "";
   }
 
-  /**
-   * Scans VM and returns a hierarchical, VS Code-structured file & folder tree
-   */
   public async refreshFilesAndFolders(): Promise<any[]> {
     const scanScript = `node -e '
       const fs = require("fs");
@@ -321,11 +330,27 @@ export class AgentSession extends DurableObject {
       } catch {}
     }
 
-    return Object.entries(this.files).map(([p, v]) => ({
-      name: p.split("/").pop() || p,
-      path: p,
-      type: v.type || "file",
-    }));
+    // Build hierarchical tree from virtual memory
+    const rootNodes: any[] = [];
+    const nodeMap: Record<string, any> = {};
+
+    for (const [p, v] of Object.entries(this.files)) {
+      const parts = p.split("/");
+      const name = parts[parts.length - 1];
+      const node = { name, path: p, type: v.type, children: v.type === "directory" ? [] : undefined };
+      nodeMap[p] = node;
+      if (parts.length === 1) {
+        rootNodes.push(node);
+      } else {
+        const parentPath = parts.slice(0, -1).join("/");
+        if (nodeMap[parentPath] && nodeMap[parentPath].children) {
+          nodeMap[parentPath].children.push(node);
+        } else {
+          rootNodes.push(node);
+        }
+      }
+    }
+    return rootNodes;
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -342,13 +367,11 @@ export class AgentSession extends DurableObject {
       return Response.json({ meta: this.meta, messages: this.messages, envVars: this.envVars }, { headers: corsHeaders });
     }
 
-    // 1. VS Code Tree Endpoint
     if (url.pathname.endsWith("/tree") && request.method === "GET") {
       const tree = await this.refreshFilesAndFolders();
       return Response.json({ tree }, { headers: corsHeaders });
     }
 
-    // 2. File Reader
     if (url.pathname.endsWith("/file") && request.method === "POST") {
       const body = (await request.json()) as { filePath?: string };
       const path = body.filePath || "src/App.tsx";
@@ -356,14 +379,12 @@ export class AgentSession extends DurableObject {
       return Response.json({ content: content || "// Empty file" }, { headers: corsHeaders });
     }
 
-    // 3. Save Env Variables into VM & Durable Object
     if (url.pathname.endsWith("/save-env") && request.method === "POST") {
       const body = (await request.json()) as { envVars: Record<string, string> };
       const newVars = body.envVars || {};
       this.envVars = { ...this.envVars, ...newVars };
       await this.ctx.storage.put("envVars", this.envVars);
 
-      // Write into .env
       const envFileContent = Object.entries(this.envVars)
         .map(([k, v]) => `${k}=${v}`)
         .join("\n");
@@ -372,7 +393,6 @@ export class AgentSession extends DurableObject {
       return Response.json({ success: true, count: Object.keys(this.envVars).length, envVars: this.envVars }, { headers: corsHeaders });
     }
 
-    // 4. Terminal Exec
     if (url.pathname.endsWith("/exec") && request.method === "POST") {
       const body = (await request.json()) as { command?: string; cmd?: string };
       const cmd = body.command || body.cmd || "ls -la";
@@ -389,7 +409,6 @@ export class AgentSession extends DurableObject {
       );
     }
 
-    // 5. Render Live Preview
     if (url.pathname.endsWith("/render-preview")) {
       const appCode = this.files["src/App.tsx"]?.content || "";
       const customCss = this.files["src/index.css"]?.content || "";
@@ -397,17 +416,17 @@ export class AgentSession extends DurableObject {
       return new Response(html, { headers: { "Content-Type": "text/html; charset=UTF-8", ...corsHeaders } });
     }
 
-    // 6. Dynamic ReAct Stream
+    // Dynamic Multi-Turn ReAct Stream with Nested Subtask Accordions
     if (url.pathname.endsWith("/stream") && request.method === "POST") {
       const body = (await request.json()) as { prompt?: string; sessionId?: string };
       const userPrompt = body.prompt || "Run task";
       const sessionId = body.sessionId || "sovereign-session-default";
 
-      // Check if user passed an inline token in their prompt
-      const tokenMatch = userPrompt.match(/([a-zA-Z0-9_-]{20,})/);
-      if (tokenMatch && /github.*token|token.*env/i.test(userPrompt)) {
-        this.envVars["GITHUB_TOKEN"] = tokenMatch[1];
-        await this.ctx.storage.put("envVars", this.envVars);
+      // Detect folder intent from prompt
+      let targetFolder = "";
+      const folderMatch = userPrompt.match(/inside\s+([a-zA-Z0-9_-]+)|in\s+folder\s+([a-zA-Z0-9_-]+)/i);
+      if (folderMatch) {
+        targetFolder = folderMatch[1] || folderMatch[2];
       }
 
       this.messages.push({ role: "user", content: userPrompt, timestamp: new Date().toISOString() });
@@ -449,11 +468,8 @@ export class AgentSession extends DurableObject {
 
           const updateGroupOutput = (group: TaskGroup) => {
             group.output = group.subActions
-              .map((s) => {
-                const icon = s.type === "command" ? ">_" : s.type === "write_file" ? "📁" : s.type === "read_file" ? "🔍" : s.type === "env_box" ? "🔑" : "🧠";
-                return `${icon} ${s.title}\n${s.output || ""}`;
-              })
-              .join("\n\n");
+              .map((s) => `${s.title}: ${s.status.toUpperCase()}`)
+              .join("\n");
           };
 
           this.meta = {
@@ -468,24 +484,23 @@ export class AgentSession extends DurableObject {
             },
           };
 
-          // Check if User is explicitly requesting Env Box Modal
           const isEnvModalRequest = /empty\s*env|env\s*box|enter.*env|credentials\s*box/i.test(userPrompt);
           if (isEnvModalRequest) {
             const envFields = [
               { key: "GITHUB_TOKEN", label: "GitHub Personal Access Token", placeholder: "ghp_...", type: "password" },
               { key: "CLOUDFLARE_API_TOKEN", label: "Cloudflare API Token", placeholder: "cfut_...", type: "password" },
-              { key: "CLOUDFLARE_ACCOUNT_ID", label: "Cloudflare Account ID", placeholder: "1b77c2a9725b1e4c20f52f8ecfadbb3f", type: "text" },
+              { key: "CLOUDFLARE_ACCOUNT_ID", label: "Cloudflare Account ID", placeholder: "1b77c2a9...", type: "text" },
               { key: "E2B_API_KEY", label: "E2B API Key", placeholder: "e2b_...", type: "password" },
-              { key: "CUSTOM_ENV", label: "Custom Secret", placeholder: "Secret value", type: "password" },
+              { key: "CUSTOM_SECRET", label: "Custom Secret", placeholder: "Secret value", type: "password" },
             ];
 
             const group = await getOrCreateGroup("Environment Credentials Configuration");
             const subAction: SubAction = {
               id: String(subActionCounter++),
               type: "env_box",
-              title: "Enter your environment variable to continue",
+              title: "Triggered Environment Modal for User Credentials",
               status: "completed",
-              output: `[MODAL TRIGGERED] Interactive Env-Box ready for user input.\nFields: ${envFields.map((f) => f.key).join(", ")}`,
+              output: `[MODAL OPENED] Please input your API keys and click Apply.`,
             };
             group.subActions.push(subAction);
             updateGroupOutput(group);
@@ -521,31 +536,32 @@ export class AgentSession extends DurableObject {
 
             console.log(`[Turn ${turn}] AI Output:`, aiResponseText.slice(0, 150));
 
+            // Parse custom phase header
+            const phaseMatch = aiResponseText.match(/<task_phase\s+title=["']([^"']+)["']>([\s\S]*?)<\/task_phase>/i);
+            if (phaseMatch) {
+              await getOrCreateGroup(phaseMatch[1].trim());
+            }
+
             const cmdRegex = /<execute_command>([\s\S]*?)<\/execute_command>/gi;
             const writeRegex = /<write_file\s+path=["']([^"']+)["']>([\s\S]*?)<\/write_file>/gi;
             const readRegex = /<read_file\s+path=["']([^"']+)["']\s*\/>/gi;
 
             let hasTools = false;
 
-            // 1. Execute Commands
+            // 1. Execute Command Sub-Actions
             let cmdMatch;
             while ((cmdMatch = cmdRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
               let cmd = cmdMatch[1].trim();
 
-              // Inject stored GITHUB_TOKEN if cloning private repos
-              if (this.envVars["GITHUB_TOKEN"] && cmd.includes("git clone https://github.com/")) {
-                cmd = cmd.replace("https://github.com/", `https://${this.envVars["GITHUB_TOKEN"]}@github.com/`);
-              }
-
               const group = currentGroup || (await getOrCreateGroup("Workspace Operations"));
               const subAction: SubAction = {
                 id: String(subActionCounter++),
                 type: "command",
-                title: `Ran: $ ${cmd.split("\n")[0].slice(0, 50)}`,
+                title: `Ran: $ ${cmd.split("\n")[0].slice(0, 45)}`,
                 status: "running",
                 command: cmd,
-                output: `$ ${cmd}\n[E2B VM] Executing...\n`,
+                output: `$ ${cmd}\n[E2B VM] Executing in micro-VM...\n`,
               };
               group.subActions.push(subAction);
               updateGroupOutput(group);
@@ -563,18 +579,23 @@ export class AgentSession extends DurableObject {
               conversationMessages.push({ role: "user", content: `Command Output:\n${fullLog}` });
             }
 
-            // 2. Write Files
+            // 2. Write File Sub-Actions with Folder Resolution
             let writeMatch;
             while ((writeMatch = writeRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
-              const filePath = writeMatch[1].trim();
+              let filePath = writeMatch[1].trim();
               const content = writeMatch[2].trim();
-              const group = currentGroup || (await getOrCreateGroup("File Assembly"));
 
+              // Auto-prefix target folder if requested by user but omitted by LLM
+              if (targetFolder && !filePath.startsWith(targetFolder + "/") && filePath !== ".env") {
+                filePath = `${targetFolder}/${filePath}`;
+              }
+
+              const group = currentGroup || (await getOrCreateGroup("Directory & File Assembly"));
               const subAction: SubAction = {
                 id: String(subActionCounter++),
                 type: "write_file",
-                title: `Wrote: ${filePath}`,
+                title: `Created: ${filePath}`,
                 status: "running",
                 command: `write_file ${filePath}`,
                 output: `Writing ${content.length} bytes to ${filePath}...`,
@@ -593,17 +614,17 @@ export class AgentSession extends DurableObject {
               conversationMessages.push({ role: "user", content: `File ${filePath} written successfully.` });
             }
 
-            // 3. Read Files
+            // 3. Read File Sub-Actions
             let readMatch;
             while ((readMatch = readRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
               const filePath = readMatch[1].trim();
-              const group = currentGroup || (await getOrCreateGroup("File Inspection"));
+              const group = currentGroup || (await getOrCreateGroup("Workspace Inspection"));
 
               const subAction: SubAction = {
                 id: String(subActionCounter++),
                 type: "read_file",
-                title: `Read: ${filePath}`,
+                title: `Inspected: ${filePath}`,
                 status: "running",
                 command: `cat ${filePath}`,
                 output: `Reading ${filePath}...`,
@@ -629,7 +650,7 @@ export class AgentSession extends DurableObject {
                 const subAction: SubAction = {
                   id: String(subActionCounter++),
                   type: "write_file",
-                  title: "Created src/App.tsx",
+                  title: "Synthesized src/App.tsx",
                   status: "running",
                   command: "synthesize src/App.tsx",
                   output: "Writing synthesized UI...",
@@ -717,7 +738,7 @@ export default {
         {
           status: "ok",
           worker: "sovereign-agent-replit",
-          architecture: "Cloudflare Workers + Durable Objects + Workers AI + E2B (VS Code Tree & Env Modal)",
+          architecture: "Cloudflare Workers + Durable Objects + Workers AI + E2B (Nested Accordions & Path Resolver)",
           timestamp: new Date().toISOString(),
         },
         { headers: corsHeaders }
