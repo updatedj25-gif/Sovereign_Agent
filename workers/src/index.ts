@@ -39,27 +39,42 @@ export interface TaskGroup {
 
 const SYSTEM_PROMPT = `You are Sovereign Agent, a Senior Staff Software Engineer running inside an E2B Linux VM.
 
-CRITICAL RULES FOR NON-INTERACTIVE COMMANDS:
-1. When creating a Vite app, NEVER run interactive "npm create vite" without flags.
-   ALWAYS use non-interactive flags:
-   <execute_command>
-   npm create vite@latest react-vite-app -- --template react-ts --yes
-   </execute_command>
+AVAILABLE TOOLS:
+1. Write file (ALWAYS specify clean relative paths without leading slashes or /home/user):
+<write_file path="folder_name/filename.ext">
+// Code content
+</write_file>
 
-2. When creating files or folders, specify full paths:
-   <execute_command>
-   mkdir -p my_folder && touch my_folder/config.json
-   </execute_command>
+2. Execute bash command:
+<execute_command>
+mkdir -p folder_name && echo '{"status":"ok"}' > folder_name/config.json
+</execute_command>
 
-3. When writing files, use full paths:
-   <write_file path="my_folder/App.tsx">
-   // Code
-   </write_file>
+3. Execute Python 3:
+<execute_python>
+import json, os
+os.makedirs("folder_name", exist_ok=True)
+with open("folder_name/config.json", "w") as f:
+    json.dump({"status": "ok"}, f, indent=2)
+print("Saved config")
+</execute_python>
 
-4. When running Python:
-   <execute_python>
-   print("Hello from Python")
-   </execute_python>`;
+4. Read file:
+<read_file path="folder_name/filename.ext" />
+
+CRITICAL RULES:
+- Never use "/home/user/" or leading slashes in <write_file path="...">. Use relative paths like "test_app/config.json" or "src/App.tsx".
+- Never create a folder named "it", "this", or "folder". Use the exact folder name requested by the user (e.g. "test_app").
+- When asked to create a Vite app, run: "npm create vite@latest <name> -- --template react-ts --yes".`;
+
+function cleanPath(raw: string): string {
+  let p = raw.trim();
+  p = p.replace(/^\/home\/user\/?/i, "");
+  p = p.replace(/^\.\//, "");
+  p = p.replace(/^\/+/, "");
+  p = p.replace(/^it\//i, ""); // Clean any accidental "it/" prefixes
+  return p;
+}
 
 function cleanBlockContent(raw: string): string {
   let clean = raw.trim();
@@ -214,6 +229,7 @@ export class AgentSession extends DurableObject {
       const sbx = await Sandbox.create("base", { apiKey });
       this.e2bSandboxId = sbx.sandboxId;
       await this.ctx.storage.put("e2bSandboxId", this.e2bSandboxId);
+      console.log(`[E2B] Sandbox active: ${this.e2bSandboxId}`);
       return sbx;
     } catch (err: any) {
       console.error("[E2B Error]:", err.message);
@@ -249,50 +265,46 @@ export class AgentSession extends DurableObject {
   }
 
   public async writeFile(rawPath: string, rawContent: string): Promise<void> {
-    const cleanPath = rawPath.replace(/^\.\//, "").replace(/^\/+/, "");
+    const p = cleanPath(rawPath);
     const content = cleanBlockContent(rawContent);
 
-    if (cleanPath.includes("/")) {
-      const parts = cleanPath.split("/");
-      let currentDir = "";
-      for (let i = 0; i < parts.length - 1; i++) {
-        currentDir = currentDir ? `${currentDir}/${parts[i]}` : parts[i];
-        this.files[currentDir] = { content: "", type: "directory" };
-      }
+    if (p.includes("/")) {
+      const parentDir = p.substring(0, p.lastIndexOf("/"));
+      this.files[parentDir] = { content: "", type: "directory" };
     }
 
-    this.files[cleanPath] = { content, type: "file" };
+    this.files[p] = { content, type: "file" };
 
     const sbx = await this.getSandboxInstance();
     if (sbx) {
       try {
-        if (cleanPath.includes("/")) {
-          const parentDir = cleanPath.substring(0, cleanPath.lastIndexOf("/"));
+        if (p.includes("/")) {
+          const parentDir = p.substring(0, p.lastIndexOf("/"));
           await sbx.commands.run(`mkdir -p "${parentDir}"`);
         }
-        await sbx.files.write(cleanPath, content);
+        await sbx.files.write(p, content);
       } catch (err: any) {
-        console.error(`[E2B Write Error ${cleanPath}]:`, err.message);
+        console.error(`[E2B Write Error ${p}]:`, err.message);
       }
     }
   }
 
   public async readFile(rawPath: string): Promise<string> {
-    const cleanPath = rawPath.replace(/^\.\//, "").replace(/^\/+/, "");
+    const p = cleanPath(rawPath);
 
-    if (this.files[cleanPath]?.type === "directory") {
-      const childFiles = Object.keys(this.files).filter((p) => p.startsWith(cleanPath + "/") && p !== cleanPath);
-      return `// Directory: ${cleanPath}\n// Child Items:\n${childFiles.map((c) => `//  - ${c}`).join("\n") || "//  (Empty directory)"}`;
+    if (this.files[p]?.type === "directory") {
+      const childFiles = Object.keys(this.files).filter((k) => k.startsWith(p + "/") && k !== p);
+      return `// Directory: ${p}\n// Files inside:\n${childFiles.map((c) => `//  - ${c}`).join("\n") || "//  (Empty directory)"}`;
     }
 
-    if (this.files[cleanPath]?.content) return this.files[cleanPath].content;
+    if (this.files[p]?.content) return this.files[p].content;
 
     const sbx = await this.getSandboxInstance();
     if (sbx) {
       try {
-        const catRes = await this.runCommand(`cat "${cleanPath}"`);
+        const catRes = await this.runCommand(`cat "${p}"`);
         if (catRes.exitCode === 0 && catRes.stdout) {
-          this.files[cleanPath] = { content: catRes.stdout, type: "file" };
+          this.files[p] = { content: catRes.stdout, type: "file" };
           return catRes.stdout;
         }
       } catch {}
@@ -301,31 +313,29 @@ export class AgentSession extends DurableObject {
   }
 
   /**
-   * Scans VM for exact files and directories (hierarchical + flat)
+   * Scans VM and returns ALL files (with full paths) so explorer lists every file
    */
-  public async refreshFilesAndFolders(): Promise<any[]> {
+  public async getExplorerFileList(): Promise<any[]> {
     const scanScript = `node -e '
       const fs = require("fs");
       const path = require("path");
-      function scan(dir, depth = 0) {
-        if (depth > 5) return [];
+      function scan(dir) {
+        let results = [];
         try {
           const entries = fs.readdirSync(dir, { withFileTypes: true });
-          let results = [];
           for (const e of entries) {
             if (e.name.startsWith(".") && e.name !== ".env") continue;
-            if (e.name === "node_modules" || e.name === "dist") continue;
-            const rel = path.join(dir, e.name).replace(/^\\.\\/?/, "");
-            const isDir = e.isDirectory();
-            results.push({
-              name: e.name,
-              path: rel,
-              type: isDir ? "directory" : "file",
-              children: isDir ? scan(path.join(dir, e.name), depth + 1) : undefined
-            });
+            if (e.name === "node_modules" || e.name === "dist" || e.name === ".git") continue;
+            const fullRel = path.join(dir, e.name).replace(/^\\.\\/?/, "");
+            if (e.isDirectory()) {
+              results.push({ name: fullRel, path: fullRel, type: "directory" });
+              results = results.concat(scan(path.join(dir, e.name)));
+            } else {
+              results.push({ name: fullRel, path: fullRel, type: "file" });
+            }
           }
-          return results;
-        } catch (err) { return []; }
+        } catch (err) {}
+        return results;
       }
       console.log(JSON.stringify(scan(".")));
     '`;
@@ -334,37 +344,23 @@ export class AgentSession extends DurableObject {
     if (res.exitCode === 0 && res.stdout) {
       try {
         const items = JSON.parse(res.stdout.trim());
-        const flatten = (arr: any[]) => {
-          for (const item of arr) {
-            this.files[item.path] = { content: this.files[item.path]?.content || "", type: item.type };
-            if (item.children) flatten(item.children);
+        for (const item of items) {
+          if (!this.files[item.path]) {
+            this.files[item.path] = { content: "", type: item.type };
           }
-        };
-        flatten(items);
-        return items;
+        }
+        // Filter out accidental "it" directories
+        return items.filter((item: any) => !item.path.startsWith("it/") && item.path !== "it");
       } catch {}
     }
 
-    const rootNodes: any[] = [];
-    const nodeMap: Record<string, any> = {};
-
-    for (const [p, v] of Object.entries(this.files)) {
-      const parts = p.split("/");
-      const name = parts[parts.length - 1];
-      const node = { name, path: p, type: v.type, children: v.type === "directory" ? [] : undefined };
-      nodeMap[p] = node;
-      if (parts.length === 1) {
-        rootNodes.push(node);
-      } else {
-        const parentPath = parts.slice(0, -1).join("/");
-        if (nodeMap[parentPath] && nodeMap[parentPath].children) {
-          nodeMap[parentPath].children.push(node);
-        } else {
-          rootNodes.push(node);
-        }
-      }
-    }
-    return rootNodes;
+    return Object.entries(this.files)
+      .filter(([p]) => !p.startsWith("it/") && p !== "it")
+      .map(([p, v]) => ({
+        name: p,
+        path: p,
+        type: v.type || "file",
+      }));
   }
 
   public async autoSpinPreview(userPrompt: string): Promise<string> {
@@ -418,15 +414,16 @@ export class AgentSession extends DurableObject {
       return Response.json({ meta: this.meta, messages: this.messages, envVars: this.envVars }, { headers: corsHeaders });
     }
 
-    // Returns full hierarchical tree with accurate directory & file types
+    // 1. Explorer File List: Returns all files with full paths (e.g. test_app/config.json)
     if (url.pathname.endsWith("/tree") && request.method === "GET") {
-      const tree = await this.refreshFilesAndFolders();
+      const tree = await this.getExplorerFileList();
       return Response.json({ tree }, { headers: corsHeaders });
     }
 
+    // 2. File Reader: Loads exact file content from path
     if (url.pathname.endsWith("/file") && request.method === "POST") {
       const body = (await request.json()) as { filePath?: string };
-      const path = body.filePath || "src/App.tsx";
+      const path = cleanPath(body.filePath || "src/App.tsx");
       const content = await this.readFile(path);
       return Response.json({ content: content || "// Empty file" }, { headers: corsHeaders });
     }
@@ -471,10 +468,14 @@ export class AgentSession extends DurableObject {
       const userPrompt = body.prompt || "Run task";
       const sessionId = body.sessionId || "sovereign-session-default";
 
+      // Detect folder name (excluding pronouns like 'it', 'this')
       let targetFolder = "";
-      const folderMatch = userPrompt.match(/inside\s+([a-zA-Z0-9_-]+)|in\s+folder\s+([a-zA-Z0-9_-]+)/i);
+      const folderMatch = userPrompt.match(/named\s+([a-zA-Z0-9_-]+)|folder\s+([a-zA-Z0-9_-]+)/i);
       if (folderMatch) {
-        targetFolder = folderMatch[1] || folderMatch[2];
+        const candidate = folderMatch[1] || folderMatch[2];
+        if (!["it", "this", "that", "the", "a", "an", "folder"].includes(candidate.toLowerCase())) {
+          targetFolder = candidate;
+        }
       }
 
       this.messages.push({ role: "user", content: userPrompt, timestamp: new Date().toISOString() });
@@ -551,6 +552,8 @@ export class AgentSession extends DurableObject {
               aiResponseText = typeof aiRes === "string" ? aiRes : (aiRes.response || "");
             }
 
+            console.log(`[Turn ${turn}] AI Output:`, aiResponseText.slice(0, 150));
+
             const phaseMatch = aiResponseText.match(/<task_phase\s+title=["']([^"']+)["']>([\s\S]*?)<\/task_phase>/i);
             if (phaseMatch) {
               await getOrCreateGroup(phaseMatch[1].trim());
@@ -600,10 +603,6 @@ export class AgentSession extends DurableObject {
               hasTools = true;
               let cmd = cleanBlockContent(cmdMatch[1]);
 
-              if (cmd.includes("run-android") || cmd.includes("run-ios")) {
-                cmd = "echo '[PREVIEW] React Native web simulator ready.'";
-              }
-
               const group = currentGroup || (await getOrCreateGroup("Workspace Operations"));
               const subAction: SubAction = {
                 id: String(subActionCounter++),
@@ -611,7 +610,7 @@ export class AgentSession extends DurableObject {
                 title: `Ran: $ ${cmd.split("\n")[0].slice(0, 45)}`,
                 status: "running",
                 command: cmd,
-                output: `$ ${cmd}\n[E2B VM] Executing...\n`,
+                output: `$ ${cmd}\n[E2B VM] Executing in micro-VM...\n`,
               };
               group.subActions.push(subAction);
               updateGroupOutput(group);
@@ -629,13 +628,15 @@ export class AgentSession extends DurableObject {
               conversationMessages.push({ role: "user", content: `Command Output:\n${fullLog}` });
             }
 
-            // 3. Write Files
+            // 3. Write Files with Clean Path Logic
             let writeMatch;
             while ((writeMatch = writeRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
-              let filePath = writeMatch[1].trim();
+              let rawFilePath = writeMatch[1].trim();
               const content = cleanBlockContent(writeMatch[2]);
+              let filePath = cleanPath(rawFilePath);
 
+              // Auto-prefix target folder if specified and omitted
               if (targetFolder && !filePath.startsWith(targetFolder + "/") && filePath !== ".env") {
                 filePath = `${targetFolder}/${filePath}`;
               }
@@ -671,7 +672,7 @@ export class AgentSession extends DurableObject {
             let readMatch;
             while ((readMatch = readRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
-              const filePath = readMatch[1].trim();
+              const filePath = cleanPath(readMatch[1]);
               const group = currentGroup || (await getOrCreateGroup("Workspace Inspection"));
 
               const subAction: SubAction = {
@@ -697,27 +698,6 @@ export class AgentSession extends DurableObject {
             }
 
             if (!hasTools) {
-              const tsxMatch = aiResponseText.match(/```(?:tsx|jsx|typescript|ts|javascript|js)([\s\S]*?)```/i);
-              if (tsxMatch) {
-                const group = await getOrCreateGroup("UI Synthesis");
-                const subAction: SubAction = {
-                  id: String(subActionCounter++),
-                  type: "write_file",
-                  title: "Synthesized src/App.tsx",
-                  status: "running",
-                  command: "synthesize src/App.tsx",
-                  output: "Writing synthesized UI...",
-                };
-                group.subActions.push(subAction);
-                updateGroupOutput(group);
-                await sendEvent({ actions: [...taskGroups] });
-
-                await this.writeFile("src/App.tsx", tsxMatch[1].trim());
-                subAction.status = "completed";
-                subAction.output = `[SUCCESS] Created src/App.tsx (${tsxMatch[1].trim().length} bytes)`;
-                updateGroupOutput(group);
-                await sendEvent({ actions: [...taskGroups] });
-              }
               isFinished = true;
             }
           }
@@ -729,7 +709,7 @@ export class AgentSession extends DurableObject {
           }
           await sendEvent({ actions: [...taskGroups] });
 
-          await this.refreshFilesAndFolders();
+          await this.getExplorerFileList();
           await this.autoSpinPreview(userPrompt);
 
           await this.ctx.storage.put("files", this.files);
@@ -784,7 +764,7 @@ export default {
         {
           status: "ok",
           worker: "sovereign-agent-replit",
-          architecture: "Cloudflare Workers + Durable Objects + Workers AI + Python Engine",
+          architecture: "Cloudflare Workers + Durable Objects + Workers AI + Direct File Explorer",
           timestamp: new Date().toISOString(),
         },
         { headers: corsHeaders }
@@ -825,24 +805,26 @@ export default {
       return stub.fetch(new Request("https://session-do/stream", request));
     }
 
-    if (url.pathname === "/api/sandbox/save-env" && request.method === "POST") {
-      const body = (await request.clone().json()) as { sessionId?: string };
-      const sessionId = body.sessionId || "sovereign-session-default";
-      const stub = getSessionStub(sessionId);
-      return stub.fetch(new Request("https://session-do/save-env", request));
-    }
-
+    // 1. File Explorer tree endpoint: returns flat list of all active files with their paths
     if (url.pathname === "/api/sandbox/tree") {
       const sessionId = url.searchParams.get("sessionId") || "sovereign-session-default";
       const stub = getSessionStub(sessionId);
       return stub.fetch(new Request("https://session-do/tree", request));
     }
 
+    // 2. File content reader: returns the exact file content
     if (url.pathname === "/api/sandbox/file" && request.method === "POST") {
       const body = (await request.clone().json()) as { sessionId?: string };
       const sessionId = body.sessionId || "sovereign-session-default";
       const stub = getSessionStub(sessionId);
       return stub.fetch(new Request("https://session-do/file", request));
+    }
+
+    if (url.pathname === "/api/sandbox/save-env" && request.method === "POST") {
+      const body = (await request.clone().json()) as { sessionId?: string };
+      const sessionId = body.sessionId || "sovereign-session-default";
+      const stub = getSessionStub(sessionId);
+      return stub.fetch(new Request("https://session-do/save-env", request));
     }
 
     if (url.pathname === "/api/sandbox/exec" && request.method === "POST") {
@@ -890,6 +872,6 @@ export default {
       if (assetResponse.status !== 404) return assetResponse;
     }
 
-    return new Response("Sovereign Agent Dynamic Gateway", { status: 200, headers: corsHeaders });
+    return new Response("Sovereign Agent Direct Gateway", { status: 200, headers: corsHeaders });
   },
 };
