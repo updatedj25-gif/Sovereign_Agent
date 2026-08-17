@@ -40,7 +40,7 @@ export interface TaskGroup {
 const SYSTEM_PROMPT = `You are Sovereign Agent, a Senior Staff Software Engineer running inside an E2B Linux VM.
 
 AVAILABLE TOOLS:
-1. Write file (ALWAYS specify clean relative paths without leading slashes or /home/user):
+1. Write file (ALWAYS specify clean relative paths):
 <write_file path="folder_name/filename.ext">
 // Code content
 </write_file>
@@ -63,16 +63,15 @@ print("Saved config")
 <read_file path="folder_name/filename.ext" />
 
 CRITICAL RULES:
-- Never use "/home/user/" or leading slashes in <write_file path="...">. Use relative paths like "test_app/config.json" or "src/App.tsx".
-- Never create a folder named "it", "this", or "folder". Use the exact folder name requested by the user (e.g. "test_app").
-- When asked to create a Vite app, run: "npm create vite@latest <name> -- --template react-ts --yes".`;
+- Never use "/home/user/" or leading slashes in paths. Use relative paths like "test_app/config.json".
+- When asked to create a Vite app, run non-interactive: "npm create vite@latest <name> -- --template react-ts --yes".`;
 
 function cleanPath(raw: string): string {
   let p = raw.trim();
   p = p.replace(/^\/home\/user\/?/i, "");
   p = p.replace(/^\.\//, "");
   p = p.replace(/^\/+/, "");
-  p = p.replace(/^it\//i, ""); // Clean any accidental "it/" prefixes
+  p = p.replace(/^it\//i, "");
   return p;
 }
 
@@ -191,6 +190,7 @@ export class AgentSession extends DurableObject {
   private envVars: Record<string, string> = {};
   private previewHtml: string = "";
   private e2bSandboxId: string | null = null;
+  private isAborted: boolean = false;
   private env: Record<string, any>;
 
   constructor(ctx: DurableObjectState, env: Record<string, any>) {
@@ -229,7 +229,6 @@ export class AgentSession extends DurableObject {
       const sbx = await Sandbox.create("base", { apiKey });
       this.e2bSandboxId = sbx.sandboxId;
       await this.ctx.storage.put("e2bSandboxId", this.e2bSandboxId);
-      console.log(`[E2B] Sandbox active: ${this.e2bSandboxId}`);
       return sbx;
     } catch (err: any) {
       console.error("[E2B Error]:", err.message);
@@ -312,9 +311,6 @@ export class AgentSession extends DurableObject {
     return "";
   }
 
-  /**
-   * Scans VM and returns ALL files (with full paths) so explorer lists every file
-   */
   public async getExplorerFileList(): Promise<any[]> {
     const scanScript = `node -e '
       const fs = require("fs");
@@ -349,7 +345,6 @@ export class AgentSession extends DurableObject {
             this.files[item.path] = { content: "", type: item.type };
           }
         }
-        // Filter out accidental "it" directories
         return items.filter((item: any) => !item.path.startsWith("it/") && item.path !== "it");
       } catch {}
     }
@@ -410,17 +405,31 @@ export class AgentSession extends DurableObject {
 
     if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
+    // 1. Abort / Kill active task
+    if (url.pathname.endsWith("/stop") && request.method === "POST") {
+      this.isAborted = true;
+      return Response.json({ success: true, message: "Kill signal processed" }, { headers: corsHeaders });
+    }
+
+    // 2. Clear Session Data
+    if (url.pathname.endsWith("/clear") && request.method === "POST") {
+      this.messages = [];
+      this.files = {};
+      this.previewHtml = "";
+      this.meta = null;
+      await this.ctx.storage.deleteAll();
+      return Response.json({ success: true, message: "Session wiped" }, { headers: corsHeaders });
+    }
+
     if (url.pathname.endsWith("/history") && request.method === "GET") {
       return Response.json({ meta: this.meta, messages: this.messages, envVars: this.envVars }, { headers: corsHeaders });
     }
 
-    // 1. Explorer File List: Returns all files with full paths (e.g. test_app/config.json)
     if (url.pathname.endsWith("/tree") && request.method === "GET") {
       const tree = await this.getExplorerFileList();
       return Response.json({ tree }, { headers: corsHeaders });
     }
 
-    // 2. File Reader: Loads exact file content from path
     if (url.pathname.endsWith("/file") && request.method === "POST") {
       const body = (await request.json()) as { filePath?: string };
       const path = cleanPath(body.filePath || "src/App.tsx");
@@ -468,16 +477,7 @@ export class AgentSession extends DurableObject {
       const userPrompt = body.prompt || "Run task";
       const sessionId = body.sessionId || "sovereign-session-default";
 
-      // Detect folder name (excluding pronouns like 'it', 'this')
-      let targetFolder = "";
-      const folderMatch = userPrompt.match(/named\s+([a-zA-Z0-9_-]+)|folder\s+([a-zA-Z0-9_-]+)/i);
-      if (folderMatch) {
-        const candidate = folderMatch[1] || folderMatch[2];
-        if (!["it", "this", "that", "the", "a", "an", "folder"].includes(candidate.toLowerCase())) {
-          targetFolder = candidate;
-        }
-      }
-
+      this.isAborted = false;
       this.messages.push({ role: "user", content: userPrompt, timestamp: new Date().toISOString() });
 
       const { readable, writable } = new TransformStream();
@@ -541,6 +541,11 @@ export class AgentSession extends DurableObject {
           ];
 
           while (!isFinished && turn < 4) {
+            if (this.isAborted) {
+              await sendEvent({ type: "aborted", message: "Task stopped by user" });
+              break;
+            }
+
             turn++;
 
             let aiResponseText = "";
@@ -552,7 +557,7 @@ export class AgentSession extends DurableObject {
               aiResponseText = typeof aiRes === "string" ? aiRes : (aiRes.response || "");
             }
 
-            console.log(`[Turn ${turn}] AI Output:`, aiResponseText.slice(0, 150));
+            if (this.isAborted) break;
 
             const phaseMatch = aiResponseText.match(/<task_phase\s+title=["']([^"']+)["']>([\s\S]*?)<\/task_phase>/i);
             if (phaseMatch) {
@@ -569,6 +574,7 @@ export class AgentSession extends DurableObject {
             // 1. Python Execution
             let pyMatch;
             while ((pyMatch = pyRegex.exec(aiResponseText)) !== null) {
+              if (this.isAborted) break;
               hasTools = true;
               const cleanPyCode = cleanBlockContent(pyMatch[1]);
               const group = currentGroup || (await getOrCreateGroup("Python Programmatic Execution"));
@@ -600,6 +606,7 @@ export class AgentSession extends DurableObject {
             // 2. Bash Execution
             let cmdMatch;
             while ((cmdMatch = cmdRegex.exec(aiResponseText)) !== null) {
+              if (this.isAborted) break;
               hasTools = true;
               let cmd = cleanBlockContent(cmdMatch[1]);
 
@@ -610,7 +617,7 @@ export class AgentSession extends DurableObject {
                 title: `Ran: $ ${cmd.split("\n")[0].slice(0, 45)}`,
                 status: "running",
                 command: cmd,
-                output: `$ ${cmd}\n[E2B VM] Executing in micro-VM...\n`,
+                output: `$ ${cmd}\n[E2B VM] Executing...\n`,
               };
               group.subActions.push(subAction);
               updateGroupOutput(group);
@@ -628,18 +635,14 @@ export class AgentSession extends DurableObject {
               conversationMessages.push({ role: "user", content: `Command Output:\n${fullLog}` });
             }
 
-            // 3. Write Files with Clean Path Logic
+            // 3. Write Files
             let writeMatch;
             while ((writeMatch = writeRegex.exec(aiResponseText)) !== null) {
+              if (this.isAborted) break;
               hasTools = true;
               let rawFilePath = writeMatch[1].trim();
               const content = cleanBlockContent(writeMatch[2]);
               let filePath = cleanPath(rawFilePath);
-
-              // Auto-prefix target folder if specified and omitted
-              if (targetFolder && !filePath.startsWith(targetFolder + "/") && filePath !== ".env") {
-                filePath = `${targetFolder}/${filePath}`;
-              }
 
               const group = currentGroup || (await getOrCreateGroup("Directory & File Assembly"));
               const subAction: SubAction = {
@@ -671,6 +674,7 @@ export class AgentSession extends DurableObject {
             // 4. Read Files
             let readMatch;
             while ((readMatch = readRegex.exec(aiResponseText)) !== null) {
+              if (this.isAborted) break;
               hasTools = true;
               const filePath = cleanPath(readMatch[1]);
               const group = currentGroup || (await getOrCreateGroup("Workspace Inspection"));
@@ -719,7 +723,10 @@ export class AgentSession extends DurableObject {
 
           const previewUrl = `/api/sandbox/render-preview?sessionId=${encodeURIComponent(sessionId)}`;
           await sendEvent({ type: "preview_ready", previewUrl });
-          await sendEvent({ type: "stream_finished", finalResponse: `Task finished for "${userPrompt}".` });
+          await sendEvent({ 
+            type: "stream_finished", 
+            finalResponse: this.isAborted ? "Execution stopped by user." : `Task finished for "${userPrompt}".` 
+          });
         } catch (err: any) {
           console.error("[Stream Error]:", err);
           await sendEvent({ type: "error", error: err.message });
@@ -764,7 +771,7 @@ export default {
         {
           status: "ok",
           worker: "sovereign-agent-replit",
-          architecture: "Cloudflare Workers + Durable Objects + Workers AI + Direct File Explorer",
+          architecture: "Cloudflare Workers + Durable Objects + Workers AI + Abort Engine",
           timestamp: new Date().toISOString(),
         },
         { headers: corsHeaders }
@@ -775,6 +782,33 @@ export default {
       const id = env.AGENT_SESSION.idFromName(sessionId);
       return env.AGENT_SESSION.get(id);
     };
+
+    // Kill / Stop endpoint
+    if (url.pathname === "/api/agent/stop" && request.method === "POST") {
+      const body = (await request.clone().json()) as { sessionId?: string };
+      const sessionId = body.sessionId || "sovereign-session-default";
+      const stub = getSessionStub(sessionId);
+      return stub.fetch(new Request("https://session-do/stop", request));
+    }
+
+    // Clear All Sessions from KV
+    if (url.pathname === "/api/sessions" && request.method === "DELETE") {
+      const queryId = url.searchParams.get("id");
+      if (env.SOVEREIGN_KV) {
+        if (queryId) {
+          // Delete single session
+          let list: SessionMeta[] = [];
+          const raw = await env.SOVEREIGN_KV.get("sovereign_sessions_index");
+          if (raw) list = JSON.parse(raw);
+          list = list.filter((s) => s.id !== queryId);
+          await env.SOVEREIGN_KV.put("sovereign_sessions_index", JSON.stringify(list));
+        } else {
+          // Delete all sessions
+          await env.SOVEREIGN_KV.delete("sovereign_sessions_index");
+        }
+      }
+      return Response.json({ success: true }, { headers: corsHeaders });
+    }
 
     if ((url.pathname === "/api/agent/stream" || url.pathname === "/api/agent/react-stream") && request.method === "POST") {
       const body = (await request.clone().json()) as { sessionId?: string; prompt?: string };
@@ -805,26 +839,24 @@ export default {
       return stub.fetch(new Request("https://session-do/stream", request));
     }
 
-    // 1. File Explorer tree endpoint: returns flat list of all active files with their paths
+    if (url.pathname === "/api/sandbox/save-env" && request.method === "POST") {
+      const body = (await request.clone().json()) as { sessionId?: string };
+      const sessionId = body.sessionId || "sovereign-session-default";
+      const stub = getSessionStub(sessionId);
+      return stub.fetch(new Request("https://session-do/save-env", request));
+    }
+
     if (url.pathname === "/api/sandbox/tree") {
       const sessionId = url.searchParams.get("sessionId") || "sovereign-session-default";
       const stub = getSessionStub(sessionId);
       return stub.fetch(new Request("https://session-do/tree", request));
     }
 
-    // 2. File content reader: returns the exact file content
     if (url.pathname === "/api/sandbox/file" && request.method === "POST") {
       const body = (await request.clone().json()) as { sessionId?: string };
       const sessionId = body.sessionId || "sovereign-session-default";
       const stub = getSessionStub(sessionId);
       return stub.fetch(new Request("https://session-do/file", request));
-    }
-
-    if (url.pathname === "/api/sandbox/save-env" && request.method === "POST") {
-      const body = (await request.clone().json()) as { sessionId?: string };
-      const sessionId = body.sessionId || "sovereign-session-default";
-      const stub = getSessionStub(sessionId);
-      return stub.fetch(new Request("https://session-do/save-env", request));
     }
 
     if (url.pathname === "/api/sandbox/exec" && request.method === "POST") {
