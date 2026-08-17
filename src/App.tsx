@@ -11,6 +11,7 @@ import {
   Monitor, 
   X, 
   Send, 
+  FileCode,
   Search, 
   Brain, 
   MessageSquare, 
@@ -72,12 +73,11 @@ interface MessageEntry {
   checkpointId?: string;
 }
 
-// Builds a clean nested hierarchical tree from any flat path list
+// Builds clean nested hierarchical tree from any flat path list
 function buildHierarchy(flatList: { name: string; path: string; type?: string }[]): FileNode[] {
   const rootNodes: FileNode[] = [];
   const map: Record<string, FileNode> = {};
 
-  // Sort: directories first, then alphabetically
   const sorted = [...flatList].sort((a, b) => a.path.localeCompare(b.path));
 
   for (const item of sorted) {
@@ -108,7 +108,6 @@ function buildHierarchy(flatList: { name: string; path: string; type?: string }[
     }
   }
 
-  // Sort folders to top at every level
   const sortTree = (nodes: FileNode[]) => {
     nodes.sort((a, b) => {
       if (a.type === b.type) return a.name.localeCompare(b.name);
@@ -133,8 +132,8 @@ export default function App() {
   const [checkpointId, setCheckpointId] = useState<string | null>(null);
   
   const [isRunning, setIsRunning] = useState<boolean>(false);
-  const [desktopTab, setDesktopTab] = useState<'code' | 'preview' | 'terminal'>('code');
-  const [mobileTab, setMobileTab] = useState<'console' | 'code' | 'preview' | 'terminal'>('code');
+  const [desktopTab, setDesktopTab] = useState<'preview' | 'code' | 'terminal'>('preview');
+  const [mobileTab, setMobileTab] = useState<'console' | 'preview' | 'code' | 'terminal'>('console');
   
   const [sessions, setSessions] = useState<any[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string>('sovereign-session-default');
@@ -390,7 +389,6 @@ export default function App() {
 
   // Exact Language & File Icon Badges (Matching Reference Image)
   const getFileBadgeIcon = (name: string) => {
-    // ⚛️ React Component Atom Icon
     if (name.endsWith('.tsx') || name.endsWith('.jsx')) {
       return (
         <span className="w-4 h-4 mr-2 flex items-center justify-center text-cyan-400 shrink-0" title="React Component">
@@ -398,7 +396,6 @@ export default function App() {
         </span>
       );
     }
-    // [TS] TypeScript Solid Blue Badge
     if (name.endsWith('.ts') && !name.endsWith('.d.ts')) {
       return (
         <span className="w-4 h-3.5 mr-2 flex items-center justify-center rounded bg-[#007acc] text-white font-mono font-bold text-[8px] tracking-tighter shrink-0">
@@ -406,7 +403,6 @@ export default function App() {
         </span>
       );
     }
-    // [JS] JavaScript Solid Yellow Badge
     if (name.endsWith('.js') || name.endsWith('.mjs')) {
       return (
         <span className="w-4 h-3.5 mr-2 flex items-center justify-center rounded bg-[#f7df1e] text-slate-950 font-mono font-bold text-[8px] tracking-tighter shrink-0">
@@ -414,7 +410,6 @@ export default function App() {
         </span>
       );
     }
-    // [5] HTML5 Solid Orange Badge
     if (name.endsWith('.html') || name.endsWith('.htm')) {
       return (
         <span className="w-3.5 h-3.5 mr-2 flex items-center justify-center rounded bg-[#e34f26] text-white font-mono font-bold text-[9px] shrink-0">
@@ -422,7 +417,6 @@ export default function App() {
         </span>
       );
     }
-    // [3] CSS3 Solid Blue Badge
     if (name.endsWith('.css')) {
       return (
         <span className="w-3.5 h-3.5 mr-2 flex items-center justify-center rounded bg-[#1572b6] text-white font-mono font-bold text-[9px] shrink-0">
@@ -430,7 +424,6 @@ export default function App() {
         </span>
       );
     }
-    // {} JSON Amber Badge
     if (name.endsWith('.json')) {
       return (
         <span className="w-3.5 h-3.5 mr-2 flex items-center justify-center text-yellow-400 font-mono font-bold text-[10px] shrink-0">
@@ -438,18 +431,16 @@ export default function App() {
         </span>
       );
     }
-    // Python Snake
     if (name.endsWith('.py')) {
       return <span className="mr-2 text-xs shrink-0">🐍</span>;
     }
-    // Settings / Env
     if (name.endsWith('.toml') || name.endsWith('.yaml') || name.endsWith('.yml') || name.startsWith('.env')) {
       return <Settings className="w-3.5 h-3.5 text-slate-400 mr-2 shrink-0" />;
     }
     return <FileText className="w-3.5 h-3.5 text-slate-400 mr-2 shrink-0" />;
   };
 
-  // Recursive Tree Node Renderer (Matching Reference Image Hierarchy)
+  // Recursive Tree Node Renderer
   const renderTreeNodes = (nodes: FileNode[], depth = 0) => {
     return nodes.map(node => {
       const isDir = node.type === 'directory';
@@ -459,7 +450,6 @@ export default function App() {
       if (isDir) {
         return (
           <div key={node.path} className="select-none">
-            {/* Folder Item */}
             <div 
               onClick={(e) => toggleFolder(node.path, e)}
               className={`flex items-center justify-between py-1.5 px-2 rounded-lg cursor-pointer text-xs font-sans text-slate-300 transition group hover:bg-slate-800/60 ${
@@ -478,7 +468,6 @@ export default function App() {
               <MoreVertical className="w-3.5 h-3.5 text-slate-500 opacity-0 group-hover:opacity-100 transition shrink-0" />
             </div>
 
-            {/* Nested Child Nodes */}
             {isExpanded && node.children && (
               <div>
                 {node.children.length > 0 ? (
@@ -497,7 +486,6 @@ export default function App() {
         );
       }
 
-      // File Item
       return (
         <div key={node.path} className="select-none">
           <div 
@@ -534,7 +522,7 @@ export default function App() {
   return (
     <div className="flex flex-col md:flex-row h-screen w-screen bg-slate-950 text-slate-100 font-sans overflow-hidden">
       
-      {/* MOBILE ADAPTIVE TOP BAR */}
+      {/* MOBILE TOP BAR */}
       <div className="md:hidden flex items-center justify-between px-3 py-2.5 bg-slate-900 border-b border-slate-800 z-20 shrink-0">
         <div className="flex items-center gap-1.5 font-bold text-amber-400 text-xs">
           <span className="p-1 rounded bg-amber-500/10 border border-amber-500/30">⚡</span>
@@ -651,7 +639,6 @@ export default function App() {
 
               return (
                 <div key={group.id} className="space-y-2">
-                  {/* Action Pill Capsule */}
                   <div 
                     onClick={() => togglePill(group.id)}
                     className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-slate-900 border border-slate-800 hover:border-amber-500/50 cursor-pointer shadow-md transition select-none"
@@ -670,7 +657,6 @@ export default function App() {
                     {isPillOpen ? <ChevronDown className="w-3.5 h-3.5 text-slate-400 ml-1" /> : <ChevronRight className="w-3.5 h-3.5 text-slate-400 ml-1" />}
                   </div>
 
-                  {/* Expanded Sub-Accordions */}
                   {isPillOpen && subList.length > 0 && (
                     <div className="border border-slate-800 bg-slate-900/90 rounded-xl p-2.5 space-y-2 shadow-lg">
                       <div className="flex items-center justify-between px-2 pb-1 border-b border-slate-800 text-[11px] font-mono text-slate-400 font-semibold">
@@ -773,11 +759,11 @@ export default function App() {
       <div className={`${mobileTab !== 'console' ? 'flex' : 'hidden md:flex'} flex-1 md:w-[540px] lg:w-[600px] md:flex-initial flex-col bg-slate-900/40 overflow-hidden`}>
         
         <div className="hidden md:flex border-b border-slate-800 bg-slate-900/80 p-1 gap-1 text-xs shrink-0">
+          <button onClick={() => setDesktopTab('preview')} className={`flex items-center gap-1.5 px-3 py-1.5 rounded transition ${desktopTab === 'preview' ? 'bg-slate-800 text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}>
+            <Monitor className="w-3.5 h-3.5 text-emerald-400" /> Live Preview
+          </button>
           <button onClick={() => setDesktopTab('code')} className={`flex items-center gap-1.5 px-3 py-1.5 rounded transition ${desktopTab === 'code' ? 'bg-slate-800 text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}>
             <Code className="w-3.5 h-3.5" /> Code Inspector
-          </button>
-          <button onClick={() => setDesktopTab('preview')} className={`flex items-center gap-1.5 px-3 py-1.5 rounded transition ${desktopTab === 'preview' ? 'bg-slate-800 text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}>
-            <Monitor className="w-3.5 h-3.5" /> Live Preview
           </button>
           <button onClick={() => setDesktopTab('terminal')} className={`flex items-center gap-1.5 px-3 py-1.5 rounded transition ${desktopTab === 'terminal' ? 'bg-slate-800 text-amber-400 font-semibold' : 'text-slate-400 hover:text-slate-200'}`}>
             <TerminalIcon className="w-3.5 h-3.5" /> Terminal
