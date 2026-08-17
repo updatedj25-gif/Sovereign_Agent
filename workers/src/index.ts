@@ -21,7 +21,7 @@ export interface SessionMeta {
 
 export interface SubAction {
   id: string;
-  type: "command" | "write_file" | "read_file" | "thought" | "env_box";
+  type: "command" | "python" | "write_file" | "read_file" | "thought" | "env_box";
   title: string;
   status: "pending" | "running" | "completed" | "error";
   command?: string;
@@ -37,35 +37,42 @@ export interface TaskGroup {
   subActions: SubAction[];
 }
 
-const SYSTEM_PROMPT = `You are Sovereign Agent, a Senior Staff Software Engineer and UI Architect.
+const SYSTEM_PROMPT = `You are Sovereign Agent, an autonomous software engineer and data architect running inside a real E2B Linux Micro-VM with full Python 3 & bash capabilities.
 
-You execute tasks dynamically by calling tools:
+AVAILABLE TOOLS:
+1. Programmatic Python Execution (Use this for calculations, data transformation, automation, script generation, and algorithms):
+<execute_python>
+import json
+import os
 
-TOOLS:
-1. Write file (ALWAYS provide full nested paths):
+data = {"status": "success", "results": [x**2 for x in range(10)]}
+print(json.dumps(data, indent=2))
+</execute_python>
+
+2. Execute bash command (e.g. git, pip, npm, system tools):
+<execute_command>
+pip install requests pandas && python3 -c "import requests; print(requests.__version__)"
+</execute_command>
+
+3. Write file (ALWAYS specify full paths):
 <write_file path="folder_name/filename.ext">
 // Code content
 </write_file>
 
-2. Execute bash command:
-<execute_command>
-git clone https://github.com/user/repo.git .
-</execute_command>
-
-3. Read file:
+4. Read file:
 <read_file path="filename.ext" />
 
-4. Request Environment Credentials Box:
+5. Request Environment Credentials Box:
 <request_env_box title="Enter your environment variable to continue">
 <field key="GITHUB_TOKEN" label="GitHub Personal Access Token" placeholder="ghp_..." type="password" />
 <field key="CLOUDFLARE_API_TOKEN" label="Cloudflare API Token" placeholder="cfut_..." type="password" />
 </request_env_box>
 
 CRITICAL RULES:
-- When cloning a repository, inspect the cloned files immediately and verify the entry point.
+- When asked to perform Python tasks, write clean, complete Python 3 code in <execute_python> blocks.
 - When creating files in subfolders, use path="folder/file.ext" (e.g. path="adebola/config.json").
-- When building UI, write modern React 19 + Tailwind CSS in "src/App.tsx" with full interactivity.
-- For React Native requests, render an iPhone/Android mobile device frame mockup with status bars and custom styling.`;
+- When building UI, write modern React 19 + Tailwind CSS into "src/App.tsx".
+- If Python requires third-party packages, run "pip install <package>" using <execute_command>.`;
 
 function sanitizeForLivePreview(rawCode: string): string {
   let code = rawCode;
@@ -120,7 +127,6 @@ function buildPreviewHtml(appCode: string, rawCss: string, title: string): strin
   <script type="text/babel" data-presets="react,typescript">
     const { useState, useEffect, useRef, useMemo, useCallback, useReducer, useContext, createContext } = React;
 
-    // React Native Web Polyfills
     const View = (props) => <div {...props} className={props.className || ''} style={props.style}>{props.children}</div>;
     const Text = (props) => <span {...props} className={props.className || ''} style={props.style}>{props.children}</span>;
     const TouchableOpacity = (props) => <button {...props} className={props.className || ''} style={props.style} onClick={props.onPress || props.onClick}>{props.children}</button>;
@@ -243,6 +249,12 @@ export class AgentSession extends DurableObject {
     return { stdout: `[Virtual DO] Executed: ${cmd}`, stderr: "", exitCode: 0, mode: "Virtual DO" };
   }
 
+  public async runPython(code: string): Promise<{ stdout: string; stderr: string; exitCode: number; mode: string }> {
+    const b64 = btoa(unescape(encodeURIComponent(code)));
+    const runScript = `mkdir -p /tmp && echo "${b64}" | base64 -d > /tmp/runner.py && python3 -u /tmp/runner.py`;
+    return await this.runCommand(runScript);
+  }
+
   public async writeFile(rawPath: string, content: string): Promise<void> {
     const cleanPath = rawPath.replace(/^\.\//, "").replace(/^\/+/, "");
     
@@ -358,14 +370,10 @@ export class AgentSession extends DurableObject {
     return rootNodes;
   }
 
-  /**
-   * Automatically detects and extracts the best preview component from newly created or cloned projects
-   */
   public async autoSpinPreview(userPrompt: string): Promise<string> {
     let appCode = await this.readFile("src/App.tsx");
     let customCss = await this.readFile("src/index.css");
 
-    // If root App.tsx is missing, search inside cloned repositories or subfolders
     if (!appCode) {
       const candidates = Object.keys(this.files).filter(
         (p) =>
@@ -460,7 +468,7 @@ export class AgentSession extends DurableObject {
       return new Response(html, { headers: { "Content-Type": "text/html; charset=UTF-8", ...corsHeaders } });
     }
 
-    // Dynamic Multi-Turn ReAct Stream
+    // Dynamic Multi-Turn ReAct Stream with Python & Bash Tools
     if (url.pathname.endsWith("/stream") && request.method === "POST") {
       const body = (await request.json()) as { prompt?: string; sessionId?: string };
       const userPrompt = body.prompt || "Run task";
@@ -584,13 +592,45 @@ export class AgentSession extends DurableObject {
               await getOrCreateGroup(phaseMatch[1].trim());
             }
 
+            const pyRegex = /<execute_python>([\s\S]*?)<\/execute_python>/gi;
             const cmdRegex = /<execute_command>([\s\S]*?)<\/execute_command>/gi;
             const writeRegex = /<write_file\s+path=["']([^"']+)["']>([\s\S]*?)<\/write_file>/gi;
             const readRegex = /<read_file\s+path=["']([^"']+)["']\s*\/>/gi;
 
             let hasTools = false;
 
-            // 1. Execute Command Sub-Actions
+            // 1. Programmatic Python Tool Execution
+            let pyMatch;
+            while ((pyMatch = pyRegex.exec(aiResponseText)) !== null) {
+              hasTools = true;
+              const pyCode = pyMatch[1].trim();
+              const group = currentGroup || (await getOrCreateGroup("Python Programmatic Execution"));
+
+              const subAction: SubAction = {
+                id: String(subActionCounter++),
+                type: "python",
+                title: `🐍 Python: ${pyCode.split("\n")[0].slice(0, 45)}...`,
+                status: "running",
+                command: `python3 -u runner.py`,
+                output: `>>> Executing Python script in micro-VM...\n`,
+              };
+              group.subActions.push(subAction);
+              updateGroupOutput(group);
+              await sendEvent({ actions: [...taskGroups] });
+
+              const pyResult = await this.runPython(pyCode);
+              const fullLog = `>>> Python Output:\n${pyResult.stdout || ""}${pyResult.stderr ? `\n[PYTHON TRACEBACK / STDERR]\n${pyResult.stderr}` : ""}\n[Exit Code: ${pyResult.exitCode}]`;
+
+              subAction.status = pyResult.exitCode === 0 ? "completed" : "error";
+              subAction.output = fullLog;
+              updateGroupOutput(group);
+              await sendEvent({ actions: [...taskGroups] });
+
+              conversationMessages.push({ role: "assistant", content: `<execute_python>${pyCode}</execute_python>` });
+              conversationMessages.push({ role: "user", content: `Python Execution Output:\n${fullLog}` });
+            }
+
+            // 2. Execute Bash Commands
             let cmdMatch;
             while ((cmdMatch = cmdRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
@@ -625,7 +665,7 @@ export class AgentSession extends DurableObject {
               conversationMessages.push({ role: "user", content: `Command Output:\n${fullLog}` });
             }
 
-            // 2. Write File Sub-Actions
+            // 3. Write Files
             let writeMatch;
             while ((writeMatch = writeRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
@@ -663,7 +703,7 @@ export class AgentSession extends DurableObject {
               conversationMessages.push({ role: "user", content: `File ${filePath} written successfully.` });
             }
 
-            // 3. Read File Sub-Actions
+            // 4. Read Files
             let readMatch;
             while ((readMatch = readRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
@@ -782,7 +822,7 @@ export default {
         {
           status: "ok",
           worker: "sovereign-agent-replit",
-          architecture: "Cloudflare Workers + Durable Objects + Workers AI + Auto-Preview Engine",
+          architecture: "Cloudflare Workers + Durable Objects + Workers AI + Python Engine",
           timestamp: new Date().toISOString(),
         },
         { headers: corsHeaders }
