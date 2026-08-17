@@ -38,16 +38,34 @@ export interface TaskGroup {
 }
 
 const SYSTEM_PROMPT = `You are Sovereign Agent, a Senior Staff Software Engineer and UI Architect.
-You generate production-ready code with complete styling and interactivity.
 
-RULES FOR CODE SYNTHESIS:
-1. ALWAYS write your main runnable component into "src/App.tsx" so it renders immediately in the Live Preview.
-2. When asked for "React Native" or mobile apps:
-   - Build a gorgeous mobile device mockup container in React (Tailwind mobile phone frame with rounded-3xl border, notch, and status bar).
-   - If wine background is requested, use rich wine/burgundy tones (e.g. bg-[#4A0E17], bg-[#58111A], or bg-gradient-to-b from-[#3B0A11] to-[#721B28]).
-   - Build full interactive features (chat bubbles, input bar, send button, active timestamps, avatars).
-3. Do not run "react-native run-android" or "run-ios" as the micro-VM is a headless Linux web environment. Use "src/App.tsx" with standard React/Tailwind.
-4. Output your complete component in a \`\`\`tsx ... \`\`\` code block.`;
+You execute tasks dynamically by calling tools:
+
+TOOLS:
+1. Write file (ALWAYS provide full nested paths):
+<write_file path="folder_name/filename.ext">
+// Code content
+</write_file>
+
+2. Execute bash command:
+<execute_command>
+git clone https://github.com/user/repo.git .
+</execute_command>
+
+3. Read file:
+<read_file path="filename.ext" />
+
+4. Request Environment Credentials Box:
+<request_env_box title="Enter your environment variable to continue">
+<field key="GITHUB_TOKEN" label="GitHub Personal Access Token" placeholder="ghp_..." type="password" />
+<field key="CLOUDFLARE_API_TOKEN" label="Cloudflare API Token" placeholder="cfut_..." type="password" />
+</request_env_box>
+
+CRITICAL RULES:
+- When cloning a repository, inspect the cloned files immediately and verify the entry point.
+- When creating files in subfolders, use path="folder/file.ext" (e.g. path="adebola/config.json").
+- When building UI, write modern React 19 + Tailwind CSS in "src/App.tsx" with full interactivity.
+- For React Native requests, render an iPhone/Android mobile device frame mockup with status bars and custom styling.`;
 
 function sanitizeForLivePreview(rawCode: string): string {
   let code = rawCode;
@@ -75,9 +93,6 @@ function sanitizeForLivePreview(rawCode: string): string {
   return code;
 }
 
-/**
- * Robust HTML Builder with React Native Web Polyfills & Lucide Icons
- */
 function buildPreviewHtml(appCode: string, rawCss: string, title: string): string {
   const sanitizedCode = sanitizeForLivePreview(appCode);
   const cleanCss = (rawCss || "").replace(/@import\s+["']tailwindcss["'];?/g, "");
@@ -261,7 +276,7 @@ export class AgentSession extends DurableObject {
 
     if (this.files[cleanPath]?.type === "directory") {
       const childFiles = Object.keys(this.files).filter((p) => p.startsWith(cleanPath + "/") && p !== cleanPath);
-      return `// Directory: ${cleanPath}\n// Child Items:\n${childFiles.map((c) => `//  - ${c}`).join("\n") || "//  (Empty directory)"}`;
+      return `// Directory: ${cleanPath}\n// Contents:\n${childFiles.map((c) => `//  - ${c}`).join("\n") || "//  (Empty directory)"}`;
     }
 
     if (this.files[cleanPath]?.content) return this.files[cleanPath].content;
@@ -343,6 +358,47 @@ export class AgentSession extends DurableObject {
     return rootNodes;
   }
 
+  /**
+   * Automatically detects and extracts the best preview component from newly created or cloned projects
+   */
+  public async autoSpinPreview(userPrompt: string): Promise<string> {
+    let appCode = await this.readFile("src/App.tsx");
+    let customCss = await this.readFile("src/index.css");
+
+    // If root App.tsx is missing, search inside cloned repositories or subfolders
+    if (!appCode) {
+      const candidates = Object.keys(this.files).filter(
+        (p) =>
+          p.endsWith("App.tsx") ||
+          p.endsWith("App.jsx") ||
+          p.endsWith("App.js") ||
+          p.endsWith("src.ts") ||
+          p.endsWith("main.tsx") ||
+          p.endsWith("index.html")
+      );
+
+      for (const candidate of candidates) {
+        const content = await this.readFile(candidate);
+        if (content && (content.includes("function") || content.includes("const") || content.includes("<") || content.includes("export"))) {
+          appCode = content;
+          break;
+        }
+      }
+    }
+
+    if (!customCss) {
+      const cssCandidates = Object.keys(this.files).filter((p) => p.endsWith("index.css") || p.endsWith("App.css") || p.endsWith("styles.css"));
+      if (cssCandidates.length > 0) {
+        customCss = await this.readFile(cssCandidates[0]);
+      }
+    }
+
+    if (appCode) {
+      this.previewHtml = buildPreviewHtml(appCode, customCss || "", userPrompt);
+    }
+    return this.previewHtml;
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const corsHeaders = {
@@ -400,20 +456,7 @@ export class AgentSession extends DurableObject {
     }
 
     if (url.pathname.endsWith("/render-preview")) {
-      let appCode = await this.readFile("src/App.tsx");
-      if (!appCode) {
-        // Universal search for any created app file
-        const candidates = Object.keys(this.files).filter((p) => p.endsWith(".tsx") || p.endsWith(".jsx") || p.endsWith(".js") || p.endsWith(".ts"));
-        for (const c of candidates) {
-          const cCode = await this.readFile(c);
-          if (cCode && (cCode.includes("function") || cCode.includes("const") || cCode.includes("return"))) {
-            appCode = cCode;
-            break;
-          }
-        }
-      }
-      const customCss = (await this.readFile("src/index.css")) || "";
-      const html = buildPreviewHtml(appCode || "export default function App() { return <div className='p-8 text-center text-amber-400'>App Loaded</div>; }", customCss, "Live Preview");
+      const html = this.previewHtml || buildPreviewHtml(this.files["src/App.tsx"]?.content || "", "", "Live Preview");
       return new Response(html, { headers: { "Content-Type": "text/html; charset=UTF-8", ...corsHeaders } });
     }
 
@@ -422,6 +465,12 @@ export class AgentSession extends DurableObject {
       const body = (await request.json()) as { prompt?: string; sessionId?: string };
       const userPrompt = body.prompt || "Run task";
       const sessionId = body.sessionId || "sovereign-session-default";
+
+      let targetFolder = "";
+      const folderMatch = userPrompt.match(/inside\s+([a-zA-Z0-9_-]+)|in\s+folder\s+([a-zA-Z0-9_-]+)/i);
+      if (folderMatch) {
+        targetFolder = folderMatch[1] || folderMatch[2];
+      }
 
       this.messages.push({ role: "user", content: userPrompt, timestamp: new Date().toISOString() });
 
@@ -478,6 +527,37 @@ export class AgentSession extends DurableObject {
             },
           };
 
+          const isEnvModalRequest = /empty\s*env|env\s*box|enter.*env|credentials\s*box/i.test(userPrompt);
+          if (isEnvModalRequest) {
+            const envFields = [
+              { key: "GITHUB_TOKEN", label: "GitHub Personal Access Token", placeholder: "ghp_...", type: "password" },
+              { key: "CLOUDFLARE_API_TOKEN", label: "Cloudflare API Token", placeholder: "cfut_...", type: "password" },
+              { key: "CLOUDFLARE_ACCOUNT_ID", label: "Cloudflare Account ID", placeholder: "1b77c2a9...", type: "text" },
+              { key: "E2B_API_KEY", label: "E2B API Key", placeholder: "e2b_...", type: "password" },
+              { key: "CUSTOM_SECRET", label: "Custom Secret", placeholder: "Secret value", type: "password" },
+            ];
+
+            const group = await getOrCreateGroup("Environment Credentials Configuration");
+            const subAction: SubAction = {
+              id: String(subActionCounter++),
+              type: "env_box",
+              title: "Triggered Environment Modal for User Credentials",
+              status: "completed",
+              output: `[MODAL OPENED] Input your API keys and click Apply.`,
+            };
+            group.subActions.push(subAction);
+            updateGroupOutput(group);
+
+            await sendEvent({
+              actions: [...taskGroups],
+              type: "env_modal_open",
+              envBox: {
+                title: "Enter your environment variable to continue",
+                fields: envFields,
+              },
+            });
+          }
+
           let isFinished = false;
           let turn = 0;
           const conversationMessages = [
@@ -510,13 +590,12 @@ export class AgentSession extends DurableObject {
 
             let hasTools = false;
 
-            // 1. Execute Command
+            // 1. Execute Command Sub-Actions
             let cmdMatch;
             while ((cmdMatch = cmdRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
               let cmd = cmdMatch[1].trim();
 
-              // Prevent crashing on native mobile commands in web micro-VM
               if (cmd.includes("run-android") || cmd.includes("run-ios")) {
                 cmd = "echo '[PREVIEW] React Native web simulator ready. Rendering mobile viewport in Live Preview.'";
               }
@@ -546,14 +625,18 @@ export class AgentSession extends DurableObject {
               conversationMessages.push({ role: "user", content: `Command Output:\n${fullLog}` });
             }
 
-            // 2. Write File
+            // 2. Write File Sub-Actions
             let writeMatch;
             while ((writeMatch = writeRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
               let filePath = writeMatch[1].trim();
               const content = writeMatch[2].trim();
 
-              const group = currentGroup || (await getOrCreateGroup("Component Assembly"));
+              if (targetFolder && !filePath.startsWith(targetFolder + "/") && filePath !== ".env") {
+                filePath = `${targetFolder}/${filePath}`;
+              }
+
+              const group = currentGroup || (await getOrCreateGroup("Directory & File Assembly"));
               const subAction: SubAction = {
                 id: String(subActionCounter++),
                 type: "write_file",
@@ -567,7 +650,6 @@ export class AgentSession extends DurableObject {
               await sendEvent({ actions: [...taskGroups] });
 
               await this.writeFile(filePath, content);
-              // Mirror to src/App.tsx if it's the primary App component
               if (filePath.endsWith("App.js") || filePath.endsWith("App.jsx") || filePath.endsWith("App.tsx") || filePath.endsWith("src.ts")) {
                 await this.writeFile("src/App.tsx", content);
               }
@@ -581,7 +663,7 @@ export class AgentSession extends DurableObject {
               conversationMessages.push({ role: "user", content: `File ${filePath} written successfully.` });
             }
 
-            // 3. Read File
+            // 3. Read File Sub-Actions
             let readMatch;
             while ((readMatch = readRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
@@ -610,7 +692,7 @@ export class AgentSession extends DurableObject {
               conversationMessages.push({ role: "user", content: `File Content of ${filePath}:\n${content}` });
             }
 
-            if (!hasTools) {
+            if (!hasTools && !isEnvModalRequest) {
               const tsxMatch = aiResponseText.match(/```(?:tsx|jsx|typescript|ts|javascript|js)([\s\S]*?)```/i);
               if (tsxMatch) {
                 const group = await getOrCreateGroup("UI Synthesis");
@@ -633,6 +715,8 @@ export class AgentSession extends DurableObject {
                 await sendEvent({ actions: [...taskGroups] });
               }
               isFinished = true;
+            } else if (isEnvModalRequest) {
+              isFinished = true;
             }
           }
 
@@ -644,24 +728,7 @@ export class AgentSession extends DurableObject {
           await sendEvent({ actions: [...taskGroups] });
 
           await this.refreshFilesAndFolders();
-
-          // Universal Preview Resolution
-          let appCode = await this.readFile("src/App.tsx");
-          if (!appCode) {
-            const candidates = Object.keys(this.files).filter((p) => p.endsWith(".tsx") || p.endsWith(".jsx") || p.endsWith(".js") || p.endsWith(".ts"));
-            for (const c of candidates) {
-              const cCode = await this.readFile(c);
-              if (cCode && (cCode.includes("function") || cCode.includes("const") || cCode.includes("return"))) {
-                appCode = cCode;
-                break;
-              }
-            }
-          }
-
-          const customCss = (await this.readFile("src/index.css")) || "";
-          if (appCode) {
-            this.previewHtml = buildPreviewHtml(appCode, customCss, userPrompt);
-          }
+          await this.autoSpinPreview(userPrompt);
 
           await this.ctx.storage.put("files", this.files);
           await this.ctx.storage.put("previewHtml", this.previewHtml);
@@ -715,7 +782,7 @@ export default {
         {
           status: "ok",
           worker: "sovereign-agent-replit",
-          architecture: "Cloudflare Workers + Durable Objects + Workers AI + E2B Polyfill Engine",
+          architecture: "Cloudflare Workers + Durable Objects + Workers AI + Auto-Preview Engine",
           timestamp: new Date().toISOString(),
         },
         { headers: corsHeaders }
