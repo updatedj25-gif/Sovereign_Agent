@@ -38,14 +38,14 @@ export interface TaskGroup {
   subActions: SubAction[];
 }
 
-const SYSTEM_PROMPT = `You are Sovereign Agent, a Senior Staff Autonomous Software Engineer and UI Architect running inside an E2B Linux Micro-VM.
+const SYSTEM_PROMPT = `You are Sovereign Agent, a Senior Staff Autonomous Software Engineer and UI Architect running inside an E2B Linux VM.
 
 CRITICAL CODE WRITING RULE:
 - You are a builder agent. Whenever the user asks to create, build, or style any UI, app, component, or background (e.g. "create a blue react native background"), you MUST ALWAYS write the full working code into "src/App.tsx" using <write_file path="src/App.tsx">!
 - NEVER simply describe the solution in conversational text. You MUST emit the <write_file> tool call!
 
 AVAILABLE TOOLS:
-1. Write File (ALWAYS use for UI/code generation):
+1. Write File:
 <write_file path="src/App.tsx">
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
@@ -75,28 +75,27 @@ const styles = StyleSheet.create({
 });
 </write_file>
 
-2. Declare a Task Phase Header:
+2. Declare Task Phase:
 <task_phase title="Synthesizing UI Component">
-Creating the requested UI in src/App.tsx.
+Creating component in src/App.tsx.
 </task_phase>
 
 3. Execute Python 3:
 <execute_python>
-import json, os
 print("Executing python task")
 </execute_python>
 
 4. Execute Bash Command:
 <execute_command>
-ls -la src
+mkdir -p src/components && ls -la src/components
 </execute_command>
 
 5. Read File:
 <read_file path="src/App.tsx" />
 
-6. Final Completion Summary (Place at the very end of your response):
+6. Final Completion Summary:
 <task_completed>
-Summary of what was generated and built.
+Summary of what was generated.
 </task_completed>`;
 
 function cleanPath(raw: string): string {
@@ -157,12 +156,13 @@ function buildPreviewHtml(appCode: string, rawCss: string, title: string): strin
   <script src="https://unpkg.com/@babel/standalone@7.24.0/babel.min.js"></script>
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
   <style>
-    html, body { margin: 0; padding: 0; width: 100%; height: 100%; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #030712; }
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    #root { width: 100%; min-height: 100vh; display: flex; flex-direction: column; }
     ${cleanCss}
   </style>
 </head>
-<body class="bg-slate-950 text-white min-h-screen flex items-center justify-center">
-  <div id="root" class="w-full h-full min-h-screen flex items-center justify-center"></div>
+<body>
+  <div id="root"></div>
   <div id="preview-error" class="hidden m-4 p-4 rounded-xl bg-red-950/90 border border-red-500/50 text-red-200 font-mono text-xs whitespace-pre-wrap"></div>
   
   <script type="text/babel" data-presets="react,typescript">
@@ -360,10 +360,10 @@ export class AgentSession extends DurableObject {
             if (e.name === "node_modules" || e.name === "dist" || e.name === ".git") continue;
             const fullRel = path.join(dir, e.name).replace(/^\\.\\/?/, "");
             if (e.isDirectory()) {
-              results.push({ name: fullRel, path: fullRel, type: "directory" });
+              results.push({ name: e.name, path: fullRel, type: "directory" });
               results = results.concat(scan(path.join(dir, e.name)));
             } else {
-              results.push({ name: fullRel, path: fullRel, type: "file" });
+              results.push({ name: e.name, path: fullRel, type: "file" });
             }
           }
         } catch (err) {}
@@ -388,7 +388,7 @@ export class AgentSession extends DurableObject {
     return Object.entries(this.files)
       .filter(([p]) => !p.startsWith("it/") && p !== "it")
       .map(([p, v]) => ({
-        name: p,
+        name: p.split("/").pop() || p,
         path: p,
         type: v.type || "file",
       }));
@@ -418,23 +418,45 @@ export class AgentSession extends DurableObject {
       }
     }
 
-    // Auto-generate UI fallback if prompt requested visual styling (e.g. blue background)
+    // Auto-generate UI fallback if prompt requested visual styling
     if (!appCode && /blue|wine|yellow|red|green|dark|light|theme|background|modal|card|button|chat|dashboard/i.test(userPrompt)) {
       const isBlue = /blue/i.test(userPrompt);
       const isWine = /wine/i.test(userPrompt);
       const bgColor = isBlue ? '#0000FF' : isWine ? '#4A0E17' : '#0f172a';
 
       appCode = `import React from 'react';
+import { View, Text, StyleSheet } from 'react-native';
+
 export default function App() {
   return (
-    <div style={{ minHeight: '100vh', width: '100%', backgroundColor: '${bgColor}', color: '#ffffff', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '2rem' }}>
-      <div style={{ padding: '2rem', borderRadius: '1rem', backgroundColor: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.2)', textAlign: 'center' }}>
-        <h1 style={{ fontSize: '1.5rem', fontWeight: 'bold', margin: 0 }}>${userPrompt}</h1>
-        <p style={{ fontSize: '0.875rem', opacity: 0.8, marginTop: '0.5rem' }}>Rendered live in Sovereign Agent Sandbox</p>
-      </div>
-    </div>
+    <View style={styles.container}>
+      <Text style={styles.title}>Blue React Native Background</Text>
+      <Text style={styles.subtitle}>Rendered live in Sovereign Agent Sandbox</Text>
+    </View>
   );
-}`;
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '${bgColor}',
+    justifyContent: 'center',
+    alignItems: 'center',
+    minHeight: '100vh',
+    width: '100%',
+    padding: 20,
+  },
+  title: {
+    color: '#FFFFFF',
+    fontSize: 24,
+    fontWeight: 'bold',
+    marginBottom: 8,
+  },
+  subtitle: {
+    color: 'rgba(255, 255, 255, 0.8)',
+    fontSize: 14,
+  }
+});`;
       await this.writeFile("src/App.tsx", appCode);
     }
 
@@ -514,12 +536,20 @@ export default function App() {
       );
     }
 
+    // Cache-Busting Live Preview Endpoint (Guarantees zero browser caching)
     if (url.pathname.endsWith("/render-preview")) {
       const html = this.previewHtml || buildPreviewHtml(this.files["src/App.tsx"]?.content || "", "", "Live Preview");
-      return new Response(html, { headers: { "Content-Type": "text/html; charset=UTF-8", ...corsHeaders } });
+      return new Response(html, {
+        headers: {
+          "Content-Type": "text/html; charset=UTF-8",
+          "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+          "Pragma": "no-cache",
+          "Expires": "0",
+          ...corsHeaders,
+        },
+      });
     }
 
-    // MAIN REACT STREAM (Flow: Thought -> Group/SubActions -> AutoPreview -> Summary at the bottom)
     if (url.pathname.endsWith("/stream") && request.method === "POST") {
       const body = (await request.json()) as { prompt?: string; sessionId?: string };
       const userPrompt = body.prompt || "Run task";
@@ -586,7 +616,7 @@ export default function App() {
 
           await sendEvent({
             type: "thought",
-            text: `Analyzing objective: "${userPrompt}". Planning milestones and execution strategy.`,
+            text: `Analyzing objective: "${userPrompt}". Inspecting environment and tools.`,
           });
 
           let isFinished = false;
@@ -797,14 +827,6 @@ export default function App() {
               conversationMessages.push({ role: "user", content: `File Content of ${filePath}:\n${content}` });
             }
 
-            // Check if markdown tsx was output directly
-            const tsxDirect = aiResponseText.match(/```(?:tsx|jsx|typescript|ts|javascript|js)([\s\S]*?)```/i);
-            if (tsxDirect && !hasTools) {
-              const code = cleanBlockContent(tsxDirect[1]);
-              await this.writeFile("src/App.tsx", code);
-              hasTools = true;
-            }
-
             const completedMatch = aiResponseText.match(/<task_completed>([\s\S]*?)<\/task_completed>/i);
             if (completedMatch && !hadErrorsInTurn) {
               finalCompletionSummary = completedMatch[1].trim();
@@ -830,7 +852,7 @@ export default function App() {
           await this.ctx.storage.put("messages", this.messages);
 
           const elapsedSec = Math.max(1, Math.round((Date.now() - startTime) / 1000));
-          const previewUrl = `/api/sandbox/render-preview?sessionId=${encodeURIComponent(sessionId)}`;
+          const previewUrl = `/api/sandbox/render-preview?sessionId=${encodeURIComponent(sessionId)}&t=${Date.now()}`;
           await sendEvent({ type: "preview_ready", previewUrl });
 
           const createdFilesList = Object.keys(this.files).filter(k => !k.startsWith("."));
@@ -895,7 +917,7 @@ export default {
         {
           status: "ok",
           worker: "sovereign-agent-replit",
-          architecture: "Cloudflare Workers + Durable Objects + E2B (Proper Flow & Code Writer)",
+          architecture: "Cloudflare Workers + Durable Objects + E2B (Live Preview Engine)",
           timestamp: new Date().toISOString(),
         },
         { headers: corsHeaders }
@@ -995,6 +1017,7 @@ export default {
       );
     }
 
+    // LIVE PREVIEW: No cache
     if (url.pathname === "/api/sandbox/render-preview") {
       const sessionId = url.searchParams.get("sessionId") || "sovereign-session-default";
       const stub = getSessionStub(sessionId);
@@ -1003,7 +1026,7 @@ export default {
 
     if (url.pathname === "/api/sandbox/preview-url") {
       const sessionId = url.searchParams.get("sessionId") || "sovereign-session-default";
-      const previewUrl = `${url.origin}/api/sandbox/render-preview?sessionId=${encodeURIComponent(sessionId)}`;
+      const previewUrl = `${url.origin}/api/sandbox/render-preview?sessionId=${encodeURIComponent(sessionId)}&t=${Date.now()}`;
       return Response.json({ previewUrl, isListening: true, status: "running", port: 5173 }, { headers: corsHeaders });
     }
 
