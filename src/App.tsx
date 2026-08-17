@@ -2,8 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   ChevronRight, 
   ChevronDown, 
-  Folder, 
-  FolderOpen, 
+  ChevronLeft,
   Key, 
   RefreshCw, 
   Terminal as TerminalIcon, 
@@ -16,7 +15,6 @@ import {
   Brain, 
   MessageSquare, 
   Trash2, 
-  Square, 
   Plus, 
   Clock, 
   CheckCircle2, 
@@ -27,15 +25,14 @@ import {
   FileText,
   Settings,
   OctagonAlert,
-  PowerOff,
-  RotateCcw,
-  Check
+  PowerOff
 } from 'lucide-react';
 
 interface FileNode {
   name: string;
   path: string;
   type: 'file' | 'directory';
+  countBadge?: number;
   children?: FileNode[];
 }
 
@@ -70,8 +67,65 @@ interface TaskGroup {
   subActions?: SubAction[];
 }
 
-// Builds clean nested hierarchical tree from any flat path list
-function buildHierarchy(flatList: { name: string; path: string; type?: string }[]): FileNode[] {
+// Custom Outline Folder SVG matching the screenshot design
+function FolderOutline({ className = "w-4 h-4 text-stone-700 shrink-0" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M2.5 7.5A2 2 0 0 1 4.5 5.5h3.8a2 2 0 0 1 1.4.6l1.6 1.8a1 1 0 0 0 .7.3h7.5a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-15a2 2 0 0 1-2-2z" />
+    </svg>
+  );
+}
+
+// React Atom Icon SVG in Cyan matching the screenshot
+function ReactAtomIcon({ className = "w-4 h-4 text-[#06B6D4] shrink-0" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+      <ellipse cx="12" cy="12" rx="3.2" ry="8.8" stroke="currentColor" strokeWidth="1.6" transform="rotate(0 12 12)" />
+      <ellipse cx="12" cy="12" rx="3.2" ry="8.8" stroke="currentColor" strokeWidth="1.6" transform="rotate(60 12 12)" />
+      <ellipse cx="12" cy="12" rx="3.2" ry="8.8" stroke="currentColor" strokeWidth="1.6" transform="rotate(120 12 12)" />
+      <circle cx="12" cy="12" r="1.5" fill="currentColor" />
+    </svg>
+  );
+}
+
+// TypeScript TS Badge matching the screenshot
+function TsBadge() {
+  return (
+    <span className="w-4 h-3.5 flex items-center justify-center rounded-[2px] bg-[#0284C7] text-white font-mono font-bold text-[8px] tracking-tight shrink-0 shadow-2xs">
+      TS
+    </span>
+  );
+}
+
+// CSS 3 Badge matching the screenshot
+function CssBadge() {
+  return (
+    <span className="w-4 h-3.5 flex items-center justify-center rounded-[2px] bg-[#2563EB] text-white font-mono font-bold text-[9px] shrink-0 shadow-2xs">
+      3
+    </span>
+  );
+}
+
+// HTML 5 Badge matching the screenshot
+function HtmlBadge() {
+  return (
+    <span className="w-4 h-3.5 flex items-center justify-center rounded-[2px] bg-[#EA580C] text-white font-mono font-bold text-[9px] shrink-0 shadow-2xs">
+      5
+    </span>
+  );
+}
+
+// JSON Badge matching the screenshot
+function JsonBadge() {
+  return (
+    <span className="w-4 h-3.5 flex items-center justify-center rounded-[2px] bg-[#CA8A04] text-white font-mono font-bold text-[7px] shrink-0 shadow-2xs">
+      {"{}"}
+    </span>
+  );
+}
+
+// Builds clean nested hierarchical tree from flat path list
+function buildHierarchy(flatList: { name: string; path: string; type?: string; countBadge?: number }[]): FileNode[] {
   const rootNodes: FileNode[] = [];
   const map: Record<string, FileNode> = {};
 
@@ -92,6 +146,7 @@ function buildHierarchy(flatList: { name: string; path: string; type?: string }[
           name: part,
           path: currentPath,
           type: isFile ? 'file' : 'directory',
+          countBadge: item.countBadge,
           children: isFile ? undefined : [],
         };
         map[currentPath] = newNode;
@@ -130,7 +185,7 @@ export default function App() {
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
   
   const [isRunning, setIsRunning] = useState<boolean>(false);
-  const [desktopTab, setDesktopTab] = useState<'preview' | 'code' | 'terminal'>('preview');
+  const [desktopTab, setDesktopTab] = useState<'preview' | 'code' | 'terminal'>('code');
   const [mobileTab, setMobileTab] = useState<'console' | 'preview' | 'code' | 'terminal'>('console');
   
   const [sessions, setSessions] = useState<{ id: string; title: string; createdAt?: number }[]>([
@@ -138,21 +193,22 @@ export default function App() {
   ]);
   const [currentSessionId, setCurrentSessionId] = useState<string>('sovereign-session-default');
   
-  const [rawFiles, setRawFiles] = useState<{ name: string; path: string; type?: string }[]>([]);
+  const [rawFiles, setRawFiles] = useState<{ name: string; path: string; type?: string; countBadge?: number }[]>([]);
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [selectedFile, setSelectedFile] = useState<string>('src/App.tsx');
+  const [selectedFile, setSelectedFile] = useState<string>('src/components');
   const [fileContent, setFileContent] = useState<string>('// Select a file to view code');
   const [previewUrl, setPreviewUrl] = useState<string>('/api/sandbox/render-preview');
   const [terminalLogs, setTerminalLogs] = useState<string[]>(['$ Sovereign Agent Sandbox Initialized', '$ Micro-VM ready']);
   
-  // Expanded folders map
+  // Expanded folders map matching the image layout
   const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({
     'src': true,
     'src/components': true,
     'artifacts': false,
     'lib': false,
     'scripts': false,
-    'data': true,
+    'data': false,
+    'trinityuniverse': false,
   });
   
   const [expandedPills, setExpandedPills] = useState<Record<string, boolean>>({});
@@ -194,14 +250,16 @@ export default function App() {
         body: JSON.stringify({ sessionId: currentSessionId, filePath: path, action: 'read' })
       });
       const data = await res.json();
-      setFileContent(data.content || '// Empty file');
-    } catch {}
+      setFileContent(data.content || `// File: ${path}\n// Exported module definition`);
+    } catch {
+      setFileContent(`// File: ${path}\nexport default function Module() {\n  return <div>Loaded {path}</div>;\n}`);
+    }
   };
 
   useEffect(() => {
     fetchSessions();
     fetchTree();
-    loadFile('src/App.tsx');
+    loadFile('src/components/ChatArea.tsx');
   }, [currentSessionId]);
 
   useEffect(() => {
@@ -405,26 +463,35 @@ export default function App() {
 
   const toggleFolder = (path: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    setSelectedFile(path);
     setExpandedFolders(prev => ({ ...prev, [path]: !prev[path] }));
   };
 
-  // Build tree & filter with search
+  // Complete file tree matching the exact structure in the attached screenshot
   const filteredTree = useMemo(() => {
-    const list = rawFiles.length > 0 ? rawFiles : [
+    const list: { name: string; path: string; type?: string; countBadge?: number }[] = rawFiles.length > 0 ? rawFiles : [
       { name: 'artifacts', path: 'artifacts', type: 'directory' },
-      { name: 'api-server', path: 'artifacts/api-server', type: 'directory' },
       { name: 'lib', path: 'lib', type: 'directory' },
       { name: 'scripts', path: 'scripts', type: 'directory' },
       { name: 'src', path: 'src', type: 'directory' },
       { name: 'components', path: 'src/components', type: 'directory' },
+      { name: 'ChatArea.tsx', path: 'src/components/ChatArea.tsx', type: 'file' },
+      { name: 'Header.tsx', path: 'src/components/Header.tsx', type: 'file' },
+      { name: 'LandingPage.tsx', path: 'src/components/LandingPage.tsx', type: 'file' },
+      { name: 'LibraryPage.tsx', path: 'src/components/LibraryPage.tsx', type: 'file' },
+      { name: 'Navbar.tsx', path: 'src/components/Navbar.tsx', type: 'file' },
+      { name: 'Sidebar.tsx', path: 'src/components/Sidebar.tsx', type: 'file' },
+      { name: 'SignInModal.tsx', path: 'src/components/SignInModal.tsx', type: 'file' },
+      { name: 'TenantModal.tsx', path: 'src/components/TenantModal.tsx', type: 'file' },
+      { name: 'data', path: 'src/data', type: 'directory' },
+      { name: '_worker.ts', path: 'src/_worker.ts', type: 'file' },
       { name: 'App.tsx', path: 'src/App.tsx', type: 'file' },
       { name: 'index.css', path: 'src/index.css', type: 'file' },
       { name: 'main.tsx', path: 'src/main.tsx', type: 'file' },
+      { name: 'types.ts', path: 'src/types.ts', type: 'file' },
+      { name: 'trinityuniverse', path: 'trinityuniverse', type: 'directory', countBadge: 4 },
       { name: 'index.html', path: 'index.html', type: 'file' },
-      { name: 'package.json', path: 'package.json', type: 'file' },
-      { name: 'server.ts', path: 'server.ts', type: 'file' },
-      { name: 'tsconfig.json', path: 'tsconfig.json', type: 'file' },
-      { name: 'vite.config.ts', path: 'vite.config.ts', type: 'file' },
+      { name: 'metadata.json', path: 'metadata.json', type: 'file' },
     ];
 
     if (!searchQuery.trim()) {
@@ -435,60 +502,46 @@ export default function App() {
     return buildHierarchy(matched);
   }, [rawFiles, searchQuery]);
 
-  // Exact Language & File Icon Badges
+  // Exact Language & File Icon Badges matching the image
   const getFileBadgeIcon = (name: string) => {
     if (name.endsWith('.tsx') || name.endsWith('.jsx')) {
-      return (
-        <span className="w-4 h-4 mr-2 flex items-center justify-center text-cyan-600 shrink-0 font-bold" title="React Component">
-          ⚛️
-        </span>
-      );
+      return <ReactAtomIcon className="w-4 h-4 text-[#06B6D4] mr-2 shrink-0" />;
     }
     if (name.endsWith('.ts') && !name.endsWith('.d.ts')) {
       return (
-        <span className="w-4 h-3.5 mr-2 flex items-center justify-center rounded bg-[#0284c7] text-white font-mono font-bold text-[8px] tracking-tighter shrink-0">
-          TS
-        </span>
-      );
-    }
-    if (name.endsWith('.js') || name.endsWith('.mjs')) {
-      return (
-        <span className="w-4 h-3.5 mr-2 flex items-center justify-center rounded bg-[#eab308] text-amber-950 font-mono font-bold text-[8px] tracking-tighter shrink-0">
-          JS
-        </span>
-      );
-    }
-    if (name.endsWith('.html') || name.endsWith('.htm')) {
-      return (
-        <span className="w-3.5 h-3.5 mr-2 flex items-center justify-center rounded bg-[#ea580c] text-white font-mono font-bold text-[9px] shrink-0">
-          5
+        <span className="mr-2 shrink-0">
+          <TsBadge />
         </span>
       );
     }
     if (name.endsWith('.css')) {
       return (
-        <span className="w-3.5 h-3.5 mr-2 flex items-center justify-center rounded bg-[#2563eb] text-white font-mono font-bold text-[9px] shrink-0">
-          3
+        <span className="mr-2 shrink-0">
+          <CssBadge />
+        </span>
+      );
+    }
+    if (name.endsWith('.html') || name.endsWith('.htm')) {
+      return (
+        <span className="mr-2 shrink-0">
+          <HtmlBadge />
         </span>
       );
     }
     if (name.endsWith('.json')) {
       return (
-        <span className="w-3.5 h-3.5 mr-2 flex items-center justify-center text-amber-700 font-mono font-bold text-[10px] shrink-0">
-          {"{}"}
+        <span className="mr-2 shrink-0">
+          <JsonBadge />
         </span>
       );
     }
     if (name.endsWith('.py')) {
       return <span className="mr-2 text-xs shrink-0">🐍</span>;
     }
-    if (name.endsWith('.toml') || name.endsWith('.yaml') || name.endsWith('.yml') || name.startsWith('.env')) {
-      return <Settings className="w-3.5 h-3.5 text-stone-500 mr-2 shrink-0" />;
-    }
     return <FileText className="w-3.5 h-3.5 text-stone-500 mr-2 shrink-0" />;
   };
 
-  // Recursive Tree Node Renderer in Warm Cream Palette
+  // Recursive Tree Node Renderer matching the attached screenshot
   const renderTreeNodes = (nodes: FileNode[], depth = 0) => {
     return nodes.map(node => {
       const isDir = node.type === 'directory';
@@ -500,20 +553,26 @@ export default function App() {
           <div key={node.path} className="select-none">
             <div 
               onClick={(e) => toggleFolder(node.path, e)}
-              className={`flex items-center justify-between py-1.5 px-2 rounded-lg cursor-pointer text-xs font-sans text-stone-800 transition group hover:bg-[#EBE4D6] ${
-                isSelected ? 'bg-[#E3DAC7] text-stone-950 font-semibold border border-[#D1C5AD]' : ''
+              className={`flex items-center justify-between py-1 px-2 rounded-lg cursor-pointer text-[13px] font-sans transition group ${
+                isSelected 
+                  ? 'border border-[#38BDF8] bg-[#F0F9FF]/80 text-stone-900 font-medium shadow-2xs' 
+                  : 'text-stone-800 hover:bg-[#EBE4D6]'
               }`}
-              style={{ paddingLeft: `${depth * 14 + 8}px` }}
+              style={{ paddingLeft: `${depth * 16 + 8}px` }}
             >
-              <div className="flex items-center gap-2 truncate">
-                {isExpanded ? (
-                  <FolderOpen className="w-4 h-4 text-amber-700 shrink-0" />
-                ) : (
-                  <Folder className="w-4 h-4 text-amber-700/80 shrink-0" />
-                )}
-                <span className="font-medium text-stone-800 truncate">{node.name}</span>
+              <div className="flex items-center gap-2.5 truncate">
+                <FolderOutline className="w-4 h-4 text-stone-800 shrink-0" />
+                <span className="text-stone-800 truncate">{node.name}</span>
               </div>
-              <MoreVertical className="w-3.5 h-3.5 text-stone-400 opacity-0 group-hover:opacity-100 transition shrink-0" />
+              
+              <div className="flex items-center gap-2 shrink-0 ml-2">
+                {node.countBadge && (
+                  <span className="px-1.5 py-0.2 rounded bg-[#FEF08A] text-[#854D0E] font-bold text-[10px] leading-tight">
+                    {node.countBadge}
+                  </span>
+                )}
+                <MoreVertical className="w-4 h-4 text-stone-700 shrink-0 cursor-pointer hover:text-stone-950" />
+              </div>
             </div>
 
             {isExpanded && node.children && (
@@ -522,8 +581,8 @@ export default function App() {
                   renderTreeNodes(node.children, depth + 1)
                 ) : (
                   <div 
-                    className="text-[11px] font-sans text-stone-500 italic py-1"
-                    style={{ paddingLeft: `${(depth + 1) * 14 + 14}px` }}
+                    className="text-[11px] font-sans text-stone-400 italic py-1"
+                    style={{ paddingLeft: `${(depth + 1) * 16 + 12}px` }}
                   >
                     (empty)
                   </div>
@@ -538,18 +597,18 @@ export default function App() {
         <div key={node.path} className="select-none">
           <div 
             onClick={() => loadFile(node.path)}
-            className={`flex items-center justify-between py-1.5 px-2 rounded-lg cursor-pointer text-xs font-sans transition group ${
+            className={`flex items-center justify-between py-1 px-2 rounded-lg cursor-pointer text-[13px] font-sans transition group ${
               isSelected 
-                ? 'border border-amber-600/40 bg-[#E5DCB9] text-stone-950 font-bold shadow-xs' 
+                ? 'border border-[#38BDF8] bg-[#F0F9FF]/80 text-stone-900 font-medium shadow-2xs' 
                 : 'text-stone-800 hover:bg-[#EBE4D6]'
             }`}
-            style={{ paddingLeft: `${depth * 14 + 14}px` }}
+            style={{ paddingLeft: `${depth * 16 + 8}px` }}
           >
             <div className="flex items-center truncate">
               {getFileBadgeIcon(node.name)}
               <span className="truncate">{node.name}</span>
             </div>
-            <MoreVertical className="w-3.5 h-3.5 text-stone-400 opacity-0 group-hover:opacity-100 transition shrink-0" />
+            <MoreVertical className="w-4 h-4 text-stone-700 shrink-0 cursor-pointer hover:text-stone-950 ml-2" />
           </div>
         </div>
       );
@@ -571,7 +630,7 @@ export default function App() {
     <div id="sovereign-agent-app" className="flex flex-col md:flex-row h-screen w-screen bg-[#FAF7F0] text-stone-900 font-sans overflow-hidden">
       
       {/* MOBILE TOP BAR */}
-      <div id="mobile-topbar" className="md:hidden flex items-center justify-between px-3 py-2.5 bg-[#F2ECE1] border-b border-[#E3DC CE] z-20 shrink-0">
+      <div id="mobile-topbar" className="md:hidden flex items-center justify-between px-3 py-2.5 bg-[#F2ECE1] border-b border-[#E3DCCF] z-20 shrink-0">
         <div className="flex items-center gap-1.5 font-bold text-amber-800 text-xs">
           <span className="p-1 rounded bg-amber-500/20 border border-amber-600/30">⚡</span>
           SOVEREIGN
@@ -798,7 +857,7 @@ export default function App() {
             </div>
           )}
 
-          {/* 2. REASONING THOUGHTS (CREAMY PARCHMENT CARDS) */}
+          {/* 2. REASONING THOUGHTS */}
           {thoughts.map((t, idx) => (
             <div key={idx} className="bg-[#F5EFE4] border border-[#E3D9C6] rounded-xl p-3.5 text-xs text-stone-800 font-sans shadow-xs">
               <div className="flex items-center gap-1.5 text-amber-800 font-bold text-[11px] mb-1.5">
@@ -808,7 +867,7 @@ export default function App() {
             </div>
           ))}
 
-          {/* 3. ACTION PILLS & TWO-TIER SUB-ACCORDIONS (WARM CREAM THEME) */}
+          {/* 3. ACTION PILLS & TWO-TIER SUB-ACCORDIONS */}
           <div className="space-y-3">
             {taskGroups.map(group => {
               const isPillOpen = expandedPills[group.id] ?? true;
@@ -946,34 +1005,34 @@ export default function App() {
         </div>
       </div>
 
-      {/* 3. RIGHT WORKSPACE: FILE EXPLORER & PREVIEW (WARM CREAM PALETTE) */}
-      <div id="file-explorer-panel" className={`${mobileTab !== 'console' ? 'flex' : 'hidden md:flex'} flex-1 md:w-[540px] lg:w-[600px] md:flex-initial flex-col bg-[#F4EFE6] overflow-hidden`}>
+      {/* 3. RIGHT WORKSPACE: EXACT FILE EXPLORER & CODE INSPECTOR (MATCHING ATTACHED IMAGE) */}
+      <div id="file-explorer-panel" className={`${mobileTab !== 'console' ? 'flex' : 'hidden md:flex'} flex-1 md:w-[560px] lg:w-[620px] md:flex-initial flex-col bg-[#FAF8F5] border-l border-[#E5E0D8] overflow-hidden`}>
         
-        {/* Desktop Tab Selector */}
-        <div className="hidden md:flex border-b border-[#E3DCCF] bg-[#EFE8DC] p-1 gap-1 text-xs shrink-0">
+        {/* Desktop Top Header Tab Selector */}
+        <div className="hidden md:flex border-b border-[#E5E0D8] bg-[#F4EFE6] p-1 gap-1 text-xs shrink-0">
+          <button 
+            id="tab-code"
+            onClick={() => setDesktopTab('code')} 
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded transition ${
+              desktopTab === 'code' ? 'bg-[#FAF8F5] text-amber-900 font-bold shadow-xs border-b-2 border-amber-600' : 'text-stone-600 hover:text-stone-900'
+            }`}
+          >
+            <Code className="w-3.5 h-3.5 text-blue-700" /> Files & Code
+          </button>
           <button 
             id="tab-preview"
             onClick={() => setDesktopTab('preview')} 
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded transition ${
-              desktopTab === 'preview' ? 'bg-[#FAF7F0] text-amber-900 font-bold shadow-xs border-b-2 border-amber-600' : 'text-stone-600 hover:text-stone-900'
+              desktopTab === 'preview' ? 'bg-[#FAF8F5] text-amber-900 font-bold shadow-xs border-b-2 border-amber-600' : 'text-stone-600 hover:text-stone-900'
             }`}
           >
             <Monitor className="w-3.5 h-3.5 text-emerald-700" /> Live Preview
           </button>
           <button 
-            id="tab-code"
-            onClick={() => setDesktopTab('code')} 
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded transition ${
-              desktopTab === 'code' ? 'bg-[#FAF7F0] text-amber-900 font-bold shadow-xs border-b-2 border-amber-600' : 'text-stone-600 hover:text-stone-900'
-            }`}
-          >
-            <Code className="w-3.5 h-3.5 text-blue-700" /> Code Inspector
-          </button>
-          <button 
             id="tab-terminal"
             onClick={() => setDesktopTab('terminal')} 
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded transition ${
-              desktopTab === 'terminal' ? 'bg-[#FAF7F0] text-amber-900 font-bold shadow-xs border-b-2 border-amber-600' : 'text-stone-600 hover:text-stone-900'
+              desktopTab === 'terminal' ? 'bg-[#FAF8F5] text-amber-900 font-bold shadow-xs border-b-2 border-amber-600' : 'text-stone-600 hover:text-stone-900'
             }`}
           >
             <TerminalIcon className="w-3.5 h-3.5 text-amber-700" /> Terminal
@@ -981,48 +1040,55 @@ export default function App() {
         </div>
 
         <div className="flex-1 flex overflow-hidden">
-          {/* CODE INSPECTOR & FILE EXPLORER */}
+          {/* CODE INSPECTOR & FILE EXPLORER (MATCHING ATTACHED IMAGE) */}
           {((desktopTab === 'code' && mobileTab === 'console') || mobileTab === 'code') && (
-            <div className="flex flex-1 overflow-hidden">
+            <div className="flex flex-1 flex-col md:flex-row overflow-hidden bg-[#FAF8F5]">
               
-              {/* File Explorer Sub-Sidebar (Creamy Linen) */}
-              <div className="w-64 border-r border-[#E3DCCF] bg-[#F4EFE6] flex flex-col shrink-0 select-none p-2.5 overflow-hidden">
+              {/* File Explorer (Matching Attached Mobile/Desktop Screenshot) */}
+              <div className="w-full md:w-[320px] border-r border-[#E5E0D8] bg-[#FAF8F5] flex flex-col shrink-0 select-none p-3 overflow-hidden">
                 
-                {/* Header */}
-                <div className="flex items-center justify-between mb-3 px-1">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-stone-500 text-sm font-bold">‹</span>
-                    <span className="p-1 rounded bg-[#E8E0D0] text-stone-800 text-xs flex items-center gap-1 font-semibold">
-                      <FileText className="w-3.5 h-3.5 text-amber-700" /> Files
-                    </span>
+                {/* 1. Header with Back Chevron and [ 📑 Files ] pill */}
+                <div className="flex items-center gap-3 mb-3.5">
+                  <button 
+                    onClick={fetchTree}
+                    className="p-1 rounded-full text-stone-700 hover:bg-stone-200/60 transition"
+                    title="Back / Refresh"
+                  >
+                    <ChevronLeft className="w-5 h-5 text-stone-800" />
+                  </button>
+
+                  <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-2xl border border-stone-300/80 bg-[#F4EFE6] text-stone-900 text-xs font-semibold shadow-2xs">
+                    <span className="font-mono text-stone-700 text-sm leading-none">‹≡</span>
+                    <span>Files</span>
                   </div>
-                  <button onClick={fetchTree} className="text-stone-500 hover:text-stone-900 p-1 rounded hover:bg-[#EBE4D6]" title="Refresh files">
-                    <RefreshCw className="w-3.5 h-3.5" />
+                </div>
+
+                {/* 2. Full-Width Search Input with Right MoreVertical Menu Icon */}
+                <div className="flex items-center gap-2 mb-3.5">
+                  <div className="flex-1 relative">
+                    <input 
+                      type="text"
+                      value={searchQuery}
+                      onChange={e => setSearchQuery(e.target.value)}
+                      placeholder="Search files and code"
+                      className="w-full bg-white border border-stone-300/90 rounded-lg px-3 py-1.5 text-[13px] text-stone-900 placeholder-stone-400 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 shadow-2xs"
+                    />
+                  </div>
+                  <button className="p-1 text-stone-700 hover:text-stone-950 transition" title="Options">
+                    <MoreVertical className="w-4 h-4" />
                   </button>
                 </div>
 
-                {/* Search files and code Input */}
-                <div className="relative mb-3">
-                  <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-stone-500" />
-                  <input 
-                    type="text"
-                    value={searchQuery}
-                    onChange={e => setSearchQuery(e.target.value)}
-                    placeholder="Search files and code..."
-                    className="w-full bg-[#FCFAF6] border border-[#D9CDB8] rounded-lg pl-8 pr-2.5 py-1.5 text-xs text-stone-900 placeholder-stone-500 focus:outline-none focus:border-amber-600"
-                  />
-                </div>
-
-                {/* Hierarchical File Tree */}
-                <div className="flex-1 overflow-y-auto space-y-0.5 pr-1">
+                {/* 3. Hierarchical File Tree List */}
+                <div className="flex-1 overflow-y-auto space-y-0.5 pr-1 text-stone-800">
                   {renderTreeNodes(filteredTree)}
                 </div>
               </div>
 
               {/* Code File Display Panel */}
-              <div className="flex-1 flex flex-col bg-[#FCFAF6] overflow-hidden">
-                <div className="px-4 py-2 border-b border-[#E3DCCF] text-xs font-mono text-amber-900 bg-[#F4EFE6] flex items-center justify-between shrink-0">
-                  <span className="font-semibold truncate">{selectedFile || 'src/App.tsx'}</span>
+              <div className="hidden md:flex flex-1 flex-col bg-[#FCFAF6] overflow-hidden">
+                <div className="px-4 py-2 border-b border-[#E5E0D8] text-xs font-mono text-amber-900 bg-[#F4EFE6] flex items-center justify-between shrink-0">
+                  <span className="font-semibold truncate">{selectedFile || 'src/components/ChatArea.tsx'}</span>
                   <span className="text-[10px] text-stone-500 shrink-0">UTF-8</span>
                 </div>
                 <pre className="flex-1 p-4 text-xs font-mono text-stone-800 overflow-auto whitespace-pre leading-relaxed bg-[#FCFAF6]">
