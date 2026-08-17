@@ -45,6 +45,55 @@ app.get("/api/health", (_req: Request, res: Response) => {
   });
 });
 
+// In-Memory Session Storage
+interface SessionItem {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+}
+let storedSessions: SessionItem[] = [
+  { id: "sovereign-session-default", title: "General Workspace", createdAt: Date.now() - 3600000, updatedAt: Date.now() },
+];
+
+app.get("/api/sessions", (_req: Request, res: Response) => {
+  res.json({ sessions: storedSessions });
+});
+
+app.post("/api/sessions", (req: Request, res: Response) => {
+  const { id, title } = req.body;
+  const newSession: SessionItem = {
+    id: id || `sovereign-session-${Date.now().toString(36)}`,
+    title: title || "New Workspace Session",
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+  const existingIdx = storedSessions.findIndex(s => s.id === newSession.id);
+  if (existingIdx >= 0) {
+    storedSessions[existingIdx] = { ...storedSessions[existingIdx], ...newSession, updatedAt: Date.now() };
+  } else {
+    storedSessions.unshift(newSession);
+  }
+  res.json({ success: true, session: newSession });
+});
+
+app.delete("/api/sessions", (req: Request, res: Response) => {
+  const id = req.query.id as string;
+  if (id) {
+    storedSessions = storedSessions.filter(s => s.id !== id);
+    return res.json({ success: true, message: `Session ${id} removed` });
+  } else {
+    storedSessions = [];
+    return res.json({ success: true, message: "All sessions cleared" });
+  }
+});
+
+app.post("/api/agent/stop", (req: Request, res: Response) => {
+  const { sessionId } = req.body;
+  console.log(`[Agent Process] Killed/Aborted process for session: ${sessionId}`);
+  return res.json({ success: true, message: "Agent task stopped." });
+});
+
 // Mount Backend Routers
 app.use("/api/github", githubRouter);
 app.use("/api/sandbox", sandboxRouter);

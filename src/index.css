@@ -1,1 +1,27 @@
 @import "tailwindcss";
+
+@layer base {
+  body {
+    background-color: #FAF7F0;
+    color: #1c1917;
+  }
+
+  /* Custom subtle creamy scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #F4EFE6;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #D9CDB8;
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #C4B59D;
+  }
+}
