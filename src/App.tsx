@@ -22,7 +22,6 @@ import {
   Trash2, 
   Square, 
   Plus, 
-  Minimize2,
   Settings,
   CheckCircle2,
   AlertCircle,
@@ -36,7 +35,13 @@ interface FileNode {
   name: string;
   path: string;
   type: 'file' | 'directory';
-  children?: FileNode[];
+}
+
+interface SessionMeta {
+  id: string;
+  title: string;
+  createdAt: string;
+  lastUpdated: string;
 }
 
 interface EnvField {
@@ -73,8 +78,8 @@ interface TaskGroup {
 interface MessageEntry {
   role: 'user' | 'assistant';
   text?: string;
-  thought?: string;
-  groups?: TaskGroup[];
+  elapsedSeconds?: number;
+  checkpointId?: string;
 }
 
 export default function App() {
@@ -86,26 +91,17 @@ export default function App() {
   const [desktopTab, setDesktopTab] = useState<'preview' | 'code' | 'terminal'>('code');
   const [mobileTab, setMobileTab] = useState<'console' | 'preview' | 'code' | 'terminal'>('console');
   
-  const [sessions, setSessions] = useState<any[]>([]);
+  const [sessions, setSessions] = useState<SessionMeta[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string>('sovereign-session-default');
   
   const [fileTree, setFileTree] = useState<FileNode[]>([]);
   const [selectedFile, setSelectedFile] = useState<string>('package.json');
-  const [fileContent, setFileContent] = useState<string>('// Select a file from the explorer');
+  const [fileContent, setFileContent] = useState<string>('// Select a file from the explorer sidebar');
   const [previewUrl, setPreviewUrl] = useState<string>('/api/sandbox/render-preview');
-  const [terminalLogs, setTerminalLogs] = useState<string[]>(['$ Sovereign Agent Phase 3 Visual Engine Active']);
+  const [terminalLogs, setTerminalLogs] = useState<string[]>(['$ Sovereign Agent Full Delivery Engine Active']);
   
-  // Two-tier expansion state for action pills and sub-rows
   const [expandedPills, setExpandedPills] = useState<Record<string, boolean>>({});
   const [expandedSubRows, setExpandedSubRows] = useState<Record<string, boolean>>({});
-  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({
-    'root': true,
-    'src': true,
-    'math_results': true,
-    'stats': true,
-    'adebola': true,
-    'Sovereign_Agent': true
-  });
   
   const [showScrollBottom, setShowScrollBottom] = useState<boolean>(false);
   const [showEnvModal, setShowEnvModal] = useState<boolean>(false);
@@ -128,20 +124,7 @@ export default function App() {
     try {
       const res = await fetch(`/api/sandbox/tree?sessionId=${currentSessionId}`);
       const data = await res.json();
-      if (data.tree) {
-        setFileTree(data.tree);
-        const newExpanded: Record<string, boolean> = { ...expandedFolders };
-        const scan = (nodes: FileNode[]) => {
-          for (const n of nodes) {
-            if (n.type === 'directory') {
-              newExpanded[n.path] = true;
-              if (n.children) scan(n.children);
-            }
-          }
-        };
-        scan(data.tree);
-        setExpandedFolders(newExpanded);
-      }
+      if (data.tree) setFileTree(data.tree);
     } catch {}
   };
 
@@ -243,7 +226,6 @@ export default function App() {
     const userPrompt = prompt;
     setPrompt('');
     
-    // Add user message to thread
     setMessages(prev => [...prev, { role: 'user', text: userPrompt }]);
     setCurrentGroups([]);
     setCurrentThoughts([]);
@@ -295,7 +277,8 @@ export default function App() {
                   {
                     role: 'assistant',
                     text: data.finalResponse,
-                    groups: currentGroups
+                    elapsedSeconds: data.elapsedSeconds,
+                    checkpointId: data.checkpointId
                   }
                 ]);
               }
@@ -324,11 +307,6 @@ export default function App() {
     setExpandedSubRows(prev => ({ ...prev, [subKey]: !prev[subKey] }));
   };
 
-  const toggleFolder = (path: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    setExpandedFolders(prev => ({ ...prev, [path]: !prev[path] }));
-  };
-
   const getSubActionIcon = (type: string) => {
     switch (type) {
       case 'python': return <span className="text-xs mr-1 font-mono">🐍</span>;
@@ -340,68 +318,21 @@ export default function App() {
     }
   };
 
-  const getVSCodeFileIcon = (name: string) => {
-    if (name === 'package.json' || name.endsWith('.json')) {
-      return <span className="text-yellow-400 font-mono font-bold text-xs mr-1.5 shrink-0">{"{}"}</span>;
-    }
-    if (name.endsWith('.toml') || name.endsWith('.yaml') || name.endsWith('.yml') || name === '.env') {
-      return <Settings className="w-3.5 h-3.5 text-slate-400 mr-1.5 shrink-0" />;
-    }
-    if (name.endsWith('.py')) return <span className="text-xs mr-1.5 shrink-0">🐍</span>;
-    if (name.endsWith('.tsx') || name.endsWith('.jsx')) return <span className="text-cyan-400 font-mono font-bold text-[11px] mr-1.5 shrink-0">TSX</span>;
-    if (name.endsWith('.ts')) return <span className="text-blue-400 font-mono font-bold text-[11px] mr-1.5 shrink-0">TS</span>;
-    if (name.endsWith('.js')) return <span className="text-amber-300 font-mono font-bold text-[11px] mr-1.5 shrink-0">JS</span>;
-    if (name.endsWith('.css')) return <span className="text-sky-400 font-mono font-bold text-[11px] mr-1.5 shrink-0">#</span>;
+  const getFileIcon = (name: string, isDir: boolean) => {
+    if (isDir) return <span className="mr-1.5 text-xs">📁</span>;
+    if (name.endsWith('.py')) return <span className="text-xs mr-1.5">🐍</span>;
+    if (name.endsWith('.tsx') || name.endsWith('.jsx')) return <FileCode className="w-3.5 h-3.5 text-cyan-400 mr-1.5 shrink-0" />;
+    if (name.endsWith('.ts') || name.endsWith('.js')) return <FileCode className="w-3.5 h-3.5 text-amber-400 mr-1.5 shrink-0" />;
+    if (name.endsWith('.json')) return <FileJson className="w-3.5 h-3.5 text-yellow-400 mr-1.5 shrink-0" />;
+    if (name.endsWith('.css')) return <FileCode className="w-3.5 h-3.5 text-sky-400 mr-1.5 shrink-0" />;
+    if (name.endsWith('.env')) return <Key className="w-3.5 h-3.5 text-emerald-400 mr-1.5 shrink-0" />;
     return <FileText className="w-3.5 h-3.5 text-slate-400 mr-1.5 shrink-0" />;
-  };
-
-  const renderVSCodeTree = (nodes: FileNode[], depth = 0) => {
-    return nodes.map(node => {
-      const isDir = node.type === 'directory';
-      const isExpanded = expandedFolders[node.path] ?? true;
-
-      if (isDir) {
-        return (
-          <div key={node.path} className="select-none">
-            <div 
-              onClick={(e) => toggleFolder(node.path, e)}
-              className="flex items-center gap-1.5 py-1 px-1.5 hover:bg-[#2a2d2e] cursor-pointer text-xs font-mono text-[#cccccc] transition rounded-sm"
-              style={{ paddingLeft: `${depth * 14 + 6}px` }}
-            >
-              {isExpanded ? <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" /> : <ChevronRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
-              {isExpanded ? <FolderOpen className="w-3.5 h-3.5 text-amber-400 shrink-0" /> : <Folder className="w-3.5 h-3.5 text-amber-400 shrink-0" />}
-              <span className="font-sans text-xs text-slate-200 truncate">{node.name}</span>
-            </div>
-            {isExpanded && node.children && (
-              <div className="relative border-l border-slate-800/60 ml-[11px]">
-                {renderVSCodeTree(node.children, depth + 1)}
-              </div>
-            )}
-          </div>
-        );
-      }
-
-      return (
-        <div key={node.path} className="select-none">
-          <div 
-            onClick={() => loadFile(node.path)}
-            className={`flex items-center py-1 px-1.5 cursor-pointer text-xs font-mono transition rounded-sm ${
-              selectedFile === node.path ? 'bg-[#094771] text-white font-medium' : 'text-[#cccccc] hover:bg-[#2a2d2e]'
-            }`}
-            style={{ paddingLeft: `${depth * 14 + 18}px` }}
-          >
-            {getVSCodeFileIcon(node.name)}
-            <span className="truncate">{node.name}</span>
-          </div>
-        </div>
-      );
-    });
   };
 
   return (
     <div className="flex flex-col md:flex-row h-screen w-screen bg-[#181818] text-[#cccccc] font-sans overflow-hidden">
       
-      {/* MOBILE ADAPTIVE TOP BAR */}
+      {/* MOBILE TOP TAB BAR */}
       <div className="md:hidden flex items-center justify-between px-3 py-2 bg-[#1f1f1f] border-b border-[#2b2b2b] z-20 shrink-0">
         <div className="flex items-center gap-1.5 font-bold text-amber-400 text-xs">
           <span className="p-1 rounded bg-amber-500/10 border border-amber-500/30">⚡</span>
@@ -476,11 +407,11 @@ export default function App() {
 
         <div className="text-[11px] text-slate-500 font-mono flex items-center gap-2 pt-3 border-t border-[#2b2b2b] shrink-0">
           <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-          E2B Linux VM Active
+          E2B Linux Micro-VM Active
         </div>
       </div>
 
-      {/* MIDDLE: CHAT CONSOLE WITH ACTION PILLS & TWO-TIER SUB-ACCORDIONS */}
+      {/* MIDDLE: CHAT CONSOLE */}
       <div className={`${mobileTab === 'console' ? 'flex' : 'hidden md:flex'} flex-1 flex-col min-w-0 border-r border-[#2b2b2b] bg-[#1e1e1e] relative`}>
         <div 
           ref={chatScrollRef}
@@ -492,7 +423,7 @@ export default function App() {
             {isRunning && <span className="text-amber-400 text-xs font-mono animate-pulse">⚡ Agent executing...</span>}
           </div>
 
-          {/* User Message Bubbles */}
+          {/* User & Assistant Thread */}
           {messages.map((m, i) => (
             <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
               {m.role === 'user' ? (
@@ -500,17 +431,35 @@ export default function App() {
                   {m.text}
                 </div>
               ) : (
-                <div className="max-w-2xl bg-[#252526] border border-[#333333] p-4 rounded-2xl text-xs text-slate-200 shadow-lg space-y-2">
+                <div className="max-w-2xl bg-[#252526] border border-[#333333] p-4 rounded-2xl text-xs text-slate-200 shadow-lg space-y-3">
                   <div className="font-bold text-amber-400 flex items-center gap-1.5 text-xs">
                     <Sparkles className="w-3.5 h-3.5" /> Sovereign Agent
                   </div>
-                  <p className="whitespace-pre-wrap leading-relaxed">{m.text}</p>
+                  <div className="whitespace-pre-wrap leading-relaxed prose prose-invert max-w-none text-xs">
+                    {m.text}
+                  </div>
+
+                  {/* PHASE 4: AUDIT METRIC BADGES */}
+                  {(m.elapsedSeconds || m.checkpointId) && (
+                    <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-[#333333] text-[11px] font-mono">
+                      {m.elapsedSeconds && (
+                        <span className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#181818] border border-[#3c3c3c] text-slate-300">
+                          <Clock className="w-3 h-3 text-amber-400" /> Worked for {m.elapsedSeconds}s
+                        </span>
+                      )}
+                      {m.checkpointId && (
+                        <span className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#181818] border border-[#3c3c3c] text-emerald-300">
+                          <CheckCircle2 className="w-3 h-3 text-emerald-400" /> Checkpoint saved: {m.checkpointId}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
           ))}
 
-          {/* Conversational Thoughts / Think-Aloud Blocks */}
+          {/* Conversational Thoughts */}
           {currentThoughts.map((t, idx) => (
             <div key={idx} className="bg-[#252526]/80 border border-[#333333] rounded-xl p-3 text-xs text-slate-300 font-sans shadow-sm">
               <div className="flex items-center gap-1.5 text-amber-400 font-semibold text-[11px] mb-1">
@@ -520,7 +469,7 @@ export default function App() {
             </div>
           ))}
 
-          {/* PHASE 3: COMPACT ACTION PILLS & TWO-TIER SUB-ACCORDIONS */}
+          {/* Action Pills & Sub-Accordions */}
           <div className="space-y-3">
             {currentGroups.map(group => {
               const isPillOpen = expandedPills[group.id] ?? true;
@@ -528,8 +477,6 @@ export default function App() {
 
               return (
                 <div key={group.id} className="space-y-2">
-                  
-                  {/* Tier 1: Action Pill Capsule (Matching Reference Screenshots) */}
                   <div 
                     onClick={() => togglePill(group.id)}
                     className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-[#252526] border border-[#3c3c3c] hover:border-amber-500/50 cursor-pointer shadow-md transition select-none"
@@ -548,7 +495,6 @@ export default function App() {
                     {isPillOpen ? <ChevronDown className="w-3.5 h-3.5 text-slate-400 ml-1" /> : <ChevronRight className="w-3.5 h-3.5 text-slate-400 ml-1" />}
                   </div>
 
-                  {/* Tier 2: Expanded Subtask Accordions */}
                   {isPillOpen && subList.length > 0 && (
                     <div className="border border-[#333333] bg-[#252526] rounded-xl p-2.5 space-y-2 shadow-lg">
                       <div className="flex items-center justify-between px-2 pb-1 border-b border-[#333333] text-[11px] font-mono text-slate-400 font-semibold">
@@ -596,7 +542,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Floating Scroll to Bottom Button */}
         {showScrollBottom && (
           <button 
             onClick={scrollToBottom}
@@ -606,7 +551,6 @@ export default function App() {
           </button>
         )}
 
-        {/* Input Bar with Red Kill Button */}
         <div className="p-3.5 border-t border-[#2b2b2b] bg-[#181818]">
           <div className="flex gap-2">
             <input 
@@ -630,7 +574,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* RIGHT WORKSPACE: 100% REAL VS CODE EXPLORER + PREVIEW */}
+      {/* RIGHT WORKSPACE PANELS */}
       <div className={`${mobileTab !== 'console' ? 'flex' : 'hidden md:flex'} flex-1 md:w-[540px] lg:w-[600px] md:flex-initial flex-col bg-[#1e1e1e] overflow-hidden`}>
         
         <div className="hidden md:flex border-b border-[#2b2b2b] bg-[#252526] p-1 gap-1 text-xs shrink-0">
@@ -646,44 +590,45 @@ export default function App() {
         </div>
 
         <div className="flex-1 flex overflow-hidden">
-          {/* LIVE PREVIEW VIEW */}
+          {/* LIVE PREVIEW */}
           {((desktopTab === 'preview' && mobileTab === 'console') || mobileTab === 'preview') && (
             <div className="flex-1 flex flex-col bg-slate-950 overflow-hidden">
               <iframe src={previewUrl} className="flex-1 w-full border-0 bg-slate-950" title="Live Preview" />
             </div>
           )}
 
-          {/* CODE INSPECTOR VIEW (VS Code Tree Sidebar + File Viewer) */}
+          {/* CODE INSPECTOR */}
           {((desktopTab === 'code' && mobileTab === 'console') || mobileTab === 'code') && (
             <div className="flex flex-1 overflow-hidden">
               <div className="w-56 border-r border-[#2b2b2b] bg-[#181818] flex flex-col shrink-0 select-none">
                 <div className="flex items-center justify-between px-3 py-2 text-[11px] font-bold text-[#bbbbbb] uppercase tracking-wider">
                   <span>Explorer</span>
-                  <div className="flex items-center gap-1 text-slate-400">
-                    <RefreshCw onClick={fetchTree} className="w-3.5 h-3.5 cursor-pointer hover:text-white" title="Refresh" />
-                  </div>
-                </div>
-
-                <div 
-                  onClick={(e) => toggleFolder('root', e)}
-                  className="flex items-center gap-1 px-2 py-1 text-xs font-bold text-[#cccccc] cursor-pointer hover:bg-[#2a2d2e]"
-                >
-                  {expandedFolders['root'] ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-                  <span className="truncate">Sovereign_Agent [Workspace]</span>
+                  <button onClick={fetchTree} className="text-slate-400 hover:text-white">
+                    <RefreshCw className="w-3.5 h-3.5" />
+                  </button>
                 </div>
 
                 <div className="flex-1 overflow-y-auto py-1">
-                  {fileTree.length > 0 ? (
-                    renderVSCodeTree(fileTree)
-                  ) : (
-                    <div className="p-3 text-xs text-slate-500 font-mono italic">Scanning workspace...</div>
-                  )}
+                  {fileTree.map(file => (
+                    <div 
+                      key={file.path}
+                      onClick={() => file.type === 'file' && loadFile(file.path)}
+                      className={`flex items-center py-1 px-2 rounded cursor-pointer text-xs font-mono transition ${
+                        selectedFile === file.path 
+                          ? 'bg-[#094771] text-white font-medium' 
+                          : 'text-slate-300 hover:bg-[#2a2d2e]'
+                      }`}
+                    >
+                      {getFileIcon(file.name, file.type === 'directory')}
+                      <span className="truncate">{file.name}</span>
+                    </div>
+                  ))}
                 </div>
               </div>
 
               <div className="flex-1 flex flex-col bg-[#1e1e1e] overflow-hidden">
                 <div className="px-4 py-2 border-b border-[#2b2b2b] text-xs font-mono text-amber-400 bg-[#181818] flex items-center justify-between shrink-0">
-                  <span className="font-semibold truncate">{selectedFile || 'package.json'}</span>
+                  <span className="font-semibold truncate">{selectedFile || 'Select file'}</span>
                   <span className="text-[10px] text-slate-500 shrink-0">UTF-8</span>
                 </div>
                 <pre className="flex-1 p-4 text-xs font-mono text-[#d4d4d4] overflow-auto whitespace-pre leading-relaxed bg-[#1e1e1e]">
@@ -693,7 +638,7 @@ export default function App() {
             </div>
           )}
 
-          {/* TERMINAL VIEW */}
+          {/* TERMINAL */}
           {((desktopTab === 'terminal' && mobileTab === 'console') || mobileTab === 'terminal') && (
             <div className="flex-1 p-4 bg-black font-mono text-xs text-emerald-400 overflow-y-auto">
               {terminalLogs.map((log, i) => <div key={i}>{log}</div>)}
@@ -702,14 +647,13 @@ export default function App() {
         </div>
       </div>
 
-      {/* FLOATING MOBILE "OPEN PREVIEW" BUTTON (Matching Reference Image) */}
+      {/* FLOATING MOBILE PREVIEW BUTTON */}
       <div className="md:hidden fixed bottom-16 right-4 z-30">
         <button 
           onClick={() => setMobileTab('preview')}
           className="bg-amber-500 text-slate-950 font-bold px-4 py-2 rounded-full shadow-2xl flex items-center gap-2 text-xs border border-amber-300"
         >
-          <ExternalLink className="w-3.5 h-3.5" />
-          Open preview
+          <ExternalLink className="w-3.5 h-3.5" /> Open preview
         </button>
       </div>
 
