@@ -2,11 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   ChevronRight, 
   ChevronDown, 
-  Folder, 
-  FolderOpen, 
   Key, 
-  Eye, 
-  EyeOff, 
   RefreshCw, 
   Terminal as TerminalIcon, 
   Code, 
@@ -26,7 +22,6 @@ import {
   CheckCircle2,
   AlertCircle,
   Clock,
-  ArrowDown,
   ExternalLink,
   Sparkles
 } from 'lucide-react';
@@ -75,35 +70,31 @@ interface TaskGroup {
   subActions?: SubAction[];
 }
 
-interface MessageEntry {
-  role: 'user' | 'assistant';
-  text?: string;
-  elapsedSeconds?: number;
-  checkpointId?: string;
-}
-
 export default function App() {
   const [prompt, setPrompt] = useState('');
-  const [messages, setMessages] = useState<MessageEntry[]>([]);
-  const [currentGroups, setCurrentGroups] = useState<TaskGroup[]>([]);
-  const [currentThoughts, setCurrentThoughts] = useState<{ text: string; turn?: number }[]>([]);
+  const [userPromptText, setUserPromptText] = useState<string>('');
+  const [taskGroups, setTaskGroups] = useState<TaskGroup[]>([]);
+  const [thoughts, setThoughts] = useState<{ text: string; turn?: number }[]>([]);
+  const [finalReport, setFinalReport] = useState<string | null>(null);
+  const [elapsedTime, setElapsedTime] = useState<number | null>(null);
+  const [checkpointId, setCheckpointId] = useState<string | null>(null);
+  
   const [isRunning, setIsRunning] = useState<boolean>(false);
-  const [desktopTab, setDesktopTab] = useState<'preview' | 'code' | 'terminal'>('code');
+  const [desktopTab, setDesktopTab] = useState<'preview' | 'code' | 'terminal'>('preview');
   const [mobileTab, setMobileTab] = useState<'console' | 'preview' | 'code' | 'terminal'>('console');
   
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string>('sovereign-session-default');
   
   const [fileTree, setFileTree] = useState<FileNode[]>([]);
-  const [selectedFile, setSelectedFile] = useState<string>('package.json');
-  const [fileContent, setFileContent] = useState<string>('// Select a file from the explorer sidebar');
+  const [selectedFile, setSelectedFile] = useState<string>('src/App.tsx');
+  const [fileContent, setFileContent] = useState<string>('// Loading workspace...');
   const [previewUrl, setPreviewUrl] = useState<string>('/api/sandbox/render-preview');
-  const [terminalLogs, setTerminalLogs] = useState<string[]>(['$ Sovereign Agent Full Delivery Engine Active']);
+  const [terminalLogs, setTerminalLogs] = useState<string[]>(['$ Sovereign Agent Engine Active']);
   
   const [expandedPills, setExpandedPills] = useState<Record<string, boolean>>({});
   const [expandedSubRows, setExpandedSubRows] = useState<Record<string, boolean>>({});
   
-  const [showScrollBottom, setShowScrollBottom] = useState<boolean>(false);
   const [showEnvModal, setShowEnvModal] = useState<boolean>(false);
   const [envModalData, setEnvModalData] = useState<EnvModalData | null>(null);
   const [envValues, setEnvValues] = useState<Record<string, string>>({});
@@ -144,29 +135,20 @@ export default function App() {
   useEffect(() => {
     fetchSessions();
     fetchTree();
-    loadFile('package.json');
+    loadFile('src/App.tsx');
   }, [currentSessionId]);
 
-  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
-    setShowScrollBottom(scrollHeight - scrollTop - clientHeight > 100);
-  };
-
-  const scrollToBottom = () => {
-    if (chatScrollRef.current) {
-      chatScrollRef.current.scrollTo({
-        top: chatScrollRef.current.scrollHeight,
-        behavior: 'smooth'
-      });
-    }
-  };
+  useEffect(() => {
+    chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: 'smooth' });
+  }, [taskGroups, thoughts, finalReport]);
 
   const createNewSession = () => {
     const newId = `sovereign-session-${Date.now().toString(36)}`;
     setCurrentSessionId(newId);
-    setMessages([]);
-    setCurrentGroups([]);
-    setCurrentThoughts([]);
+    setUserPromptText('');
+    setTaskGroups([]);
+    setThoughts([]);
+    setFinalReport(null);
     setPrompt('');
   };
 
@@ -225,10 +207,10 @@ export default function App() {
     if (!prompt.trim() || isRunning) return;
     const userPrompt = prompt;
     setPrompt('');
-    
-    setMessages(prev => [...prev, { role: 'user', text: userPrompt }]);
-    setCurrentGroups([]);
-    setCurrentThoughts([]);
+    setUserPromptText(userPrompt);
+    setTaskGroups([]);
+    setThoughts([]);
+    setFinalReport(null);
     setIsRunning(true);
 
     const controller = new AbortController();
@@ -259,10 +241,10 @@ export default function App() {
             try {
               const data = JSON.parse(line.replace('data: ', ''));
               if (data.type === 'thought') {
-                setCurrentThoughts(prev => [...prev, { text: data.text, turn: data.turn }]);
+                setThoughts(prev => [...prev, { text: data.text, turn: data.turn }]);
               }
               if (data.actions) {
-                setCurrentGroups(data.actions);
+                setTaskGroups(data.actions);
               }
               if (data.type === 'env_modal_open' && data.envBox) {
                 setEnvModalData(data.envBox);
@@ -272,15 +254,9 @@ export default function App() {
                 setPreviewUrl(`/api/sandbox/render-preview?sessionId=${currentSessionId}&t=${Date.now()}`);
               }
               if (data.type === 'stream_finished') {
-                setMessages(prev => [
-                  ...prev,
-                  {
-                    role: 'assistant',
-                    text: data.finalResponse,
-                    elapsedSeconds: data.elapsedSeconds,
-                    checkpointId: data.checkpointId
-                  }
-                ]);
+                setFinalReport(data.finalResponse);
+                if (data.elapsedSeconds) setElapsedTime(data.elapsedSeconds);
+                if (data.checkpointId) setCheckpointId(data.checkpointId);
               }
               if (data.type === 'aborted') {
                 setIsRunning(false);
@@ -340,8 +316,8 @@ export default function App() {
         </div>
         <div className="flex gap-1">
           <button onClick={() => setMobileTab('console')} className={`px-2.5 py-1 rounded text-xs font-semibold ${mobileTab === 'console' ? 'bg-amber-500 text-slate-950 font-bold' : 'bg-[#2b2b2b] text-slate-300'}`}>Console</button>
-          <button onClick={() => setMobileTab('code')} className={`px-2.5 py-1 rounded text-xs font-semibold ${mobileTab === 'code' ? 'bg-amber-500 text-slate-950 font-bold' : 'bg-[#2b2b2b] text-slate-300'}`}>Code</button>
           <button onClick={() => setMobileTab('preview')} className={`px-2.5 py-1 rounded text-xs font-semibold ${mobileTab === 'preview' ? 'bg-amber-500 text-slate-950 font-bold' : 'bg-[#2b2b2b] text-slate-300'}`}>Preview</button>
+          <button onClick={() => setMobileTab('code')} className={`px-2.5 py-1 rounded text-xs font-semibold ${mobileTab === 'code' ? 'bg-amber-500 text-slate-950 font-bold' : 'bg-[#2b2b2b] text-slate-300'}`}>Code</button>
         </div>
       </div>
 
@@ -411,11 +387,10 @@ export default function App() {
         </div>
       </div>
 
-      {/* MIDDLE: CHAT CONSOLE */}
+      {/* MIDDLE: CHAT CONSOLE (CHRONOLOGICAL FLOW: USER -> THOUGHTS -> ACCORDIONS -> SUMMARY REPORT AT BOTTOM) */}
       <div className={`${mobileTab === 'console' ? 'flex' : 'hidden md:flex'} flex-1 flex-col min-w-0 border-r border-[#2b2b2b] bg-[#1e1e1e] relative`}>
         <div 
           ref={chatScrollRef}
-          onScroll={handleScroll}
           className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4"
         >
           <div className="text-xs font-mono text-slate-400 flex items-center justify-between">
@@ -423,44 +398,17 @@ export default function App() {
             {isRunning && <span className="text-amber-400 text-xs font-mono animate-pulse">⚡ Agent executing...</span>}
           </div>
 
-          {/* User & Assistant Thread */}
-          {messages.map((m, i) => (
-            <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              {m.role === 'user' ? (
-                <div className="max-w-xl bg-gradient-to-r from-amber-600 to-amber-500 text-slate-950 font-medium px-4 py-2.5 rounded-2xl text-xs shadow-md">
-                  {m.text}
-                </div>
-              ) : (
-                <div className="max-w-2xl bg-[#252526] border border-[#333333] p-4 rounded-2xl text-xs text-slate-200 shadow-lg space-y-3">
-                  <div className="font-bold text-amber-400 flex items-center gap-1.5 text-xs">
-                    <Sparkles className="w-3.5 h-3.5" /> Sovereign Agent
-                  </div>
-                  <div className="whitespace-pre-wrap leading-relaxed prose prose-invert max-w-none text-xs">
-                    {m.text}
-                  </div>
-
-                  {/* PHASE 4: AUDIT METRIC BADGES */}
-                  {(m.elapsedSeconds || m.checkpointId) && (
-                    <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-[#333333] text-[11px] font-mono">
-                      {m.elapsedSeconds && (
-                        <span className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#181818] border border-[#3c3c3c] text-slate-300">
-                          <Clock className="w-3 h-3 text-amber-400" /> Worked for {m.elapsedSeconds}s
-                        </span>
-                      )}
-                      {m.checkpointId && (
-                        <span className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#181818] border border-[#3c3c3c] text-emerald-300">
-                          <CheckCircle2 className="w-3 h-3 text-emerald-400" /> Checkpoint saved: {m.checkpointId}
-                        </span>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
+          {/* 1. USER PROMPT CARD (TOP) */}
+          {userPromptText && (
+            <div className="flex justify-end">
+              <div className="max-w-xl bg-gradient-to-r from-amber-600 to-amber-500 text-slate-950 font-semibold px-4 py-2.5 rounded-2xl text-xs shadow-md">
+                {userPromptText}
+              </div>
             </div>
-          ))}
+          )}
 
-          {/* Conversational Thoughts */}
-          {currentThoughts.map((t, idx) => (
+          {/* 2. REASONING THOUGHTS */}
+          {thoughts.map((t, idx) => (
             <div key={idx} className="bg-[#252526]/80 border border-[#333333] rounded-xl p-3 text-xs text-slate-300 font-sans shadow-sm">
               <div className="flex items-center gap-1.5 text-amber-400 font-semibold text-[11px] mb-1">
                 <Brain className="w-3.5 h-3.5" /> Reasoning {t.turn ? `(Turn ${t.turn})` : ''}
@@ -469,9 +417,9 @@ export default function App() {
             </div>
           ))}
 
-          {/* Action Pills & Sub-Accordions */}
+          {/* 3. EXECUTION ACTION PILLS & SUBTASK ACCORDIONS */}
           <div className="space-y-3">
-            {currentGroups.map(group => {
+            {taskGroups.map(group => {
               const isPillOpen = expandedPills[group.id] ?? true;
               const subList = group.subActions || [];
 
@@ -540,17 +488,36 @@ export default function App() {
               );
             })}
           </div>
+
+          {/* 4. FINAL DELIVERY AUDIT REPORT (AT THE VERY BOTTOM AFTER ALL ACCORDIONS) */}
+          {finalReport && (
+            <div className="max-w-2xl bg-[#252526] border border-[#333333] p-4 rounded-2xl text-xs text-slate-200 shadow-lg space-y-3 mt-4">
+              <div className="font-bold text-amber-400 flex items-center gap-1.5 text-xs">
+                <Sparkles className="w-3.5 h-3.5" /> Sovereign Agent
+              </div>
+              <div className="whitespace-pre-wrap leading-relaxed max-w-none text-xs">
+                {finalReport}
+              </div>
+
+              {(elapsedTime || checkpointId) && (
+                <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-[#333333] text-[11px] font-mono">
+                  {elapsedTime && (
+                    <span className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#181818] border border-[#3c3c3c] text-slate-300">
+                      <Clock className="w-3 h-3 text-amber-400" /> Worked for {elapsedTime}s
+                    </span>
+                  )}
+                  {checkpointId && (
+                    <span className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#181818] border border-[#3c3c3c] text-emerald-300">
+                      <CheckCircle2 className="w-3 h-3 text-emerald-400" /> Checkpoint: {checkpointId}
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
-        {showScrollBottom && (
-          <button 
-            onClick={scrollToBottom}
-            className="absolute bottom-20 right-6 bg-[#252526] border border-[#3c3c3c] text-xs text-slate-200 px-3 py-1.5 rounded-full shadow-xl flex items-center gap-1 hover:text-amber-400 transition"
-          >
-            <ArrowDown className="w-3.5 h-3.5" /> Scroll to latest
-          </button>
-        )}
-
+        {/* Input Bar */}
         <div className="p-3.5 border-t border-[#2b2b2b] bg-[#181818]">
           <div className="flex gap-2">
             <input 
@@ -590,14 +557,14 @@ export default function App() {
         </div>
 
         <div className="flex-1 flex overflow-hidden">
-          {/* LIVE PREVIEW */}
+          {/* LIVE PREVIEW VIEW */}
           {((desktopTab === 'preview' && mobileTab === 'console') || mobileTab === 'preview') && (
             <div className="flex-1 flex flex-col bg-slate-950 overflow-hidden">
               <iframe src={previewUrl} className="flex-1 w-full border-0 bg-slate-950" title="Live Preview" />
             </div>
           )}
 
-          {/* CODE INSPECTOR */}
+          {/* CODE INSPECTOR VIEW */}
           {((desktopTab === 'code' && mobileTab === 'console') || mobileTab === 'code') && (
             <div className="flex flex-1 overflow-hidden">
               <div className="w-56 border-r border-[#2b2b2b] bg-[#181818] flex flex-col shrink-0 select-none">
@@ -638,23 +605,13 @@ export default function App() {
             </div>
           )}
 
-          {/* TERMINAL */}
+          {/* TERMINAL VIEW */}
           {((desktopTab === 'terminal' && mobileTab === 'console') || mobileTab === 'terminal') && (
             <div className="flex-1 p-4 bg-black font-mono text-xs text-emerald-400 overflow-y-auto">
               {terminalLogs.map((log, i) => <div key={i}>{log}</div>)}
             </div>
           )}
         </div>
-      </div>
-
-      {/* FLOATING MOBILE PREVIEW BUTTON */}
-      <div className="md:hidden fixed bottom-16 right-4 z-30">
-        <button 
-          onClick={() => setMobileTab('preview')}
-          className="bg-amber-500 text-slate-950 font-bold px-4 py-2 rounded-full shadow-2xl flex items-center gap-2 text-xs border border-amber-300"
-        >
-          <ExternalLink className="w-3.5 h-3.5" /> Open preview
-        </button>
       </div>
 
       {/* ENV MODAL */}
