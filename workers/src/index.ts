@@ -37,42 +37,48 @@ export interface TaskGroup {
   subActions: SubAction[];
 }
 
-const SYSTEM_PROMPT = `You are Sovereign Agent, an autonomous software engineer and data architect running inside a real E2B Linux Micro-VM with full Python 3 & bash capabilities.
+const SYSTEM_PROMPT = `You are Sovereign Agent, an autonomous software engineer running inside a real E2B Linux VM with full Python 3 & bash capabilities.
 
 AVAILABLE TOOLS:
-1. Programmatic Python Execution (Use this for calculations, data transformation, automation, script generation, and algorithms):
+1. Execute Python 3 (Do not wrap with markdown backticks inside the tag):
 <execute_python>
-import json
-import os
-
-data = {"status": "success", "results": [x**2 for x in range(10)]}
-print(json.dumps(data, indent=2))
+import json, os
+primes = [x for x in range(2, 51) if all(x % d != 0 for d in range(2, int(x**0.5) + 1))]
+os.makedirs("math_results", exist_ok=True)
+with open("math_results/primes.txt", "w") as f:
+    f.write(str(primes))
+print("Primes calculated:", primes)
 </execute_python>
 
-2. Execute bash command (e.g. git, pip, npm, system tools):
+2. Execute bash command:
 <execute_command>
-pip install requests pandas && python3 -c "import requests; print(requests.__version__)"
+mkdir -p math_results && ls -la math_results
 </execute_command>
 
-3. Write file (ALWAYS specify full paths):
-<write_file path="folder_name/filename.ext">
-// Code content
+3. Write file:
+<write_file path="math_results/primes.txt">
+[2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47]
 </write_file>
 
 4. Read file:
-<read_file path="filename.ext" />
+<read_file path="math_results/primes.txt" />
 
-5. Request Environment Credentials Box:
+5. Request Environment Box:
 <request_env_box title="Enter your environment variable to continue">
 <field key="GITHUB_TOKEN" label="GitHub Personal Access Token" placeholder="ghp_..." type="password" />
-<field key="CLOUDFLARE_API_TOKEN" label="Cloudflare API Token" placeholder="cfut_..." type="password" />
 </request_env_box>
 
 CRITICAL RULES:
-- When asked to perform Python tasks, write clean, complete Python 3 code in <execute_python> blocks.
-- When creating files in subfolders, use path="folder/file.ext" (e.g. path="adebola/config.json").
-- When building UI, write modern React 19 + Tailwind CSS into "src/App.tsx".
-- If Python requires third-party packages, run "pip install <package>" using <execute_command>.`;
+- Never put \`\`\` backticks inside tool tags.
+- When creating files in subfolders, use full relative paths (e.g. path="math_results/primes.txt").
+- When building UI, write modern React 19 + Tailwind CSS into "src/App.tsx".`;
+
+function cleanBlockContent(raw: string): string {
+  let clean = raw.trim();
+  clean = clean.replace(/^```(?:python|py|bash|sh|javascript|js|tsx|ts|json|html|css)?\s*\n?/i, "");
+  clean = clean.replace(/\n?```\s*$/i, "");
+  return clean.trim();
+}
 
 function sanitizeForLivePreview(rawCode: string): string {
   let code = rawCode;
@@ -230,7 +236,8 @@ export class AgentSession extends DurableObject {
     }
   }
 
-  public async runCommand(cmd: string): Promise<{ stdout: string; stderr: string; exitCode: number; mode: string }> {
+  public async runCommand(rawCmd: string): Promise<{ stdout: string; stderr: string; exitCode: number; mode: string }> {
+    const cmd = cleanBlockContent(rawCmd);
     const sbx = await this.getSandboxInstance();
     if (sbx) {
       try {
@@ -249,15 +256,17 @@ export class AgentSession extends DurableObject {
     return { stdout: `[Virtual DO] Executed: ${cmd}`, stderr: "", exitCode: 0, mode: "Virtual DO" };
   }
 
-  public async runPython(code: string): Promise<{ stdout: string; stderr: string; exitCode: number; mode: string }> {
-    const b64 = btoa(unescape(encodeURIComponent(code)));
+  public async runPython(rawCode: string): Promise<{ stdout: string; stderr: string; exitCode: number; mode: string }> {
+    const cleanPy = cleanBlockContent(rawCode);
+    const b64 = btoa(unescape(encodeURIComponent(cleanPy)));
     const runScript = `mkdir -p /tmp && echo "${b64}" | base64 -d > /tmp/runner.py && python3 -u /tmp/runner.py`;
     return await this.runCommand(runScript);
   }
 
-  public async writeFile(rawPath: string, content: string): Promise<void> {
+  public async writeFile(rawPath: string, rawContent: string): Promise<void> {
     const cleanPath = rawPath.replace(/^\.\//, "").replace(/^\/+/, "");
-    
+    const content = cleanBlockContent(rawContent);
+
     if (cleanPath.includes("/")) {
       const parts = cleanPath.split("/");
       let currentDir = "";
@@ -468,7 +477,6 @@ export class AgentSession extends DurableObject {
       return new Response(html, { headers: { "Content-Type": "text/html; charset=UTF-8", ...corsHeaders } });
     }
 
-    // Dynamic Multi-Turn ReAct Stream with Python & Bash Tools
     if (url.pathname.endsWith("/stream") && request.method === "POST") {
       const body = (await request.json()) as { prompt?: string; sessionId?: string };
       const userPrompt = body.prompt || "Run task";
@@ -542,7 +550,6 @@ export class AgentSession extends DurableObject {
               { key: "CLOUDFLARE_API_TOKEN", label: "Cloudflare API Token", placeholder: "cfut_...", type: "password" },
               { key: "CLOUDFLARE_ACCOUNT_ID", label: "Cloudflare Account ID", placeholder: "1b77c2a9...", type: "text" },
               { key: "E2B_API_KEY", label: "E2B API Key", placeholder: "e2b_...", type: "password" },
-              { key: "CUSTOM_SECRET", label: "Custom Secret", placeholder: "Secret value", type: "password" },
             ];
 
             const group = await getOrCreateGroup("Environment Credentials Configuration");
@@ -599,17 +606,17 @@ export class AgentSession extends DurableObject {
 
             let hasTools = false;
 
-            // 1. Programmatic Python Tool Execution
+            // 1. Python Execution (with automatic code-fence sanitization)
             let pyMatch;
             while ((pyMatch = pyRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
-              const pyCode = pyMatch[1].trim();
+              const cleanPyCode = cleanBlockContent(pyMatch[1]);
               const group = currentGroup || (await getOrCreateGroup("Python Programmatic Execution"));
 
               const subAction: SubAction = {
                 id: String(subActionCounter++),
                 type: "python",
-                title: `🐍 Python: ${pyCode.split("\n")[0].slice(0, 45)}...`,
+                title: `🐍 Python: ${cleanPyCode.split("\n")[0].slice(0, 45)}...`,
                 status: "running",
                 command: `python3 -u runner.py`,
                 output: `>>> Executing Python script in micro-VM...\n`,
@@ -618,7 +625,7 @@ export class AgentSession extends DurableObject {
               updateGroupOutput(group);
               await sendEvent({ actions: [...taskGroups] });
 
-              const pyResult = await this.runPython(pyCode);
+              const pyResult = await this.runPython(cleanPyCode);
               const fullLog = `>>> Python Output:\n${pyResult.stdout || ""}${pyResult.stderr ? `\n[PYTHON TRACEBACK / STDERR]\n${pyResult.stderr}` : ""}\n[Exit Code: ${pyResult.exitCode}]`;
 
               subAction.status = pyResult.exitCode === 0 ? "completed" : "error";
@@ -626,18 +633,18 @@ export class AgentSession extends DurableObject {
               updateGroupOutput(group);
               await sendEvent({ actions: [...taskGroups] });
 
-              conversationMessages.push({ role: "assistant", content: `<execute_python>${pyCode}</execute_python>` });
+              conversationMessages.push({ role: "assistant", content: `<execute_python>${cleanPyCode}</execute_python>` });
               conversationMessages.push({ role: "user", content: `Python Execution Output:\n${fullLog}` });
             }
 
-            // 2. Execute Bash Commands
+            // 2. Bash Execution
             let cmdMatch;
             while ((cmdMatch = cmdRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
-              let cmd = cmdMatch[1].trim();
+              let cmd = cleanBlockContent(cmdMatch[1]);
 
               if (cmd.includes("run-android") || cmd.includes("run-ios")) {
-                cmd = "echo '[PREVIEW] React Native web simulator ready. Rendering mobile viewport in Live Preview.'";
+                cmd = "echo '[PREVIEW] React Native web simulator ready.'";
               }
 
               const group = currentGroup || (await getOrCreateGroup("Workspace Operations"));
@@ -647,7 +654,7 @@ export class AgentSession extends DurableObject {
                 title: `Ran: $ ${cmd.split("\n")[0].slice(0, 45)}`,
                 status: "running",
                 command: cmd,
-                output: `$ ${cmd}\n[E2B VM] Executing in micro-VM...\n`,
+                output: `$ ${cmd}\n[E2B VM] Executing...\n`,
               };
               group.subActions.push(subAction);
               updateGroupOutput(group);
@@ -670,7 +677,7 @@ export class AgentSession extends DurableObject {
             while ((writeMatch = writeRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
               let filePath = writeMatch[1].trim();
-              const content = writeMatch[2].trim();
+              const content = cleanBlockContent(writeMatch[2]);
 
               if (targetFolder && !filePath.startsWith(targetFolder + "/") && filePath !== ".env") {
                 filePath = `${targetFolder}/${filePath}`;
