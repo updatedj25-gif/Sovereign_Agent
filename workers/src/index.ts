@@ -37,41 +37,29 @@ export interface TaskGroup {
   subActions: SubAction[];
 }
 
-const SYSTEM_PROMPT = `You are Sovereign Agent, an autonomous software engineer running inside a real E2B Linux VM with full Python 3 & bash capabilities.
+const SYSTEM_PROMPT = `You are Sovereign Agent, a Senior Staff Software Engineer running inside an E2B Linux VM.
 
-AVAILABLE TOOLS:
-1. Execute Python 3 (Do not wrap with markdown backticks inside the tag):
-<execute_python>
-import json, os
-primes = [x for x in range(2, 51) if all(x % d != 0 for d in range(2, int(x**0.5) + 1))]
-os.makedirs("math_results", exist_ok=True)
-with open("math_results/primes.txt", "w") as f:
-    f.write(str(primes))
-print("Primes calculated:", primes)
-</execute_python>
+CRITICAL RULES FOR NON-INTERACTIVE COMMANDS:
+1. When creating a Vite app, NEVER run interactive "npm create vite" without flags.
+   ALWAYS use non-interactive flags:
+   <execute_command>
+   npm create vite@latest react-vite-app -- --template react-ts --yes
+   </execute_command>
 
-2. Execute bash command:
-<execute_command>
-mkdir -p math_results && ls -la math_results
-</execute_command>
+2. When creating files or folders, specify full paths:
+   <execute_command>
+   mkdir -p my_folder && touch my_folder/config.json
+   </execute_command>
 
-3. Write file:
-<write_file path="math_results/primes.txt">
-[2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47]
-</write_file>
+3. When writing files, use full paths:
+   <write_file path="my_folder/App.tsx">
+   // Code
+   </write_file>
 
-4. Read file:
-<read_file path="math_results/primes.txt" />
-
-5. Request Environment Box:
-<request_env_box title="Enter your environment variable to continue">
-<field key="GITHUB_TOKEN" label="GitHub Personal Access Token" placeholder="ghp_..." type="password" />
-</request_env_box>
-
-CRITICAL RULES:
-- Never put \`\`\` backticks inside tool tags.
-- When creating files in subfolders, use full relative paths (e.g. path="math_results/primes.txt").
-- When building UI, write modern React 19 + Tailwind CSS into "src/App.tsx".`;
+4. When running Python:
+   <execute_python>
+   print("Hello from Python")
+   </execute_python>`;
 
 function cleanBlockContent(raw: string): string {
   let clean = raw.trim();
@@ -139,8 +127,6 @@ function buildPreviewHtml(appCode: string, rawCss: string, title: string): strin
     const TextInput = (props) => <input {...props} className={props.className || ''} style={props.style} onChange={(e) => props.onChangeText ? props.onChangeText(e.target.value) : (props.onChange && props.onChange(e))} />;
     const ScrollView = (props) => <div {...props} className={'overflow-y-auto ' + (props.className || '')} style={props.style}>{props.children}</div>;
     const Image = (props) => <img {...props} src={props.source?.uri || props.src || ''} className={props.className || ''} style={props.style} />;
-    const SafeAreaView = View;
-    const StatusBar = () => null;
     const StyleSheet = { create: (s) => s };
 
     window.onerror = function(msg, url, line) {
@@ -228,7 +214,6 @@ export class AgentSession extends DurableObject {
       const sbx = await Sandbox.create("base", { apiKey });
       this.e2bSandboxId = sbx.sandboxId;
       await this.ctx.storage.put("e2bSandboxId", this.e2bSandboxId);
-      console.log(`[E2B] Sandbox active: ${this.e2bSandboxId}`);
       return sbx;
     } catch (err: any) {
       console.error("[E2B Error]:", err.message);
@@ -297,7 +282,7 @@ export class AgentSession extends DurableObject {
 
     if (this.files[cleanPath]?.type === "directory") {
       const childFiles = Object.keys(this.files).filter((p) => p.startsWith(cleanPath + "/") && p !== cleanPath);
-      return `// Directory: ${cleanPath}\n// Contents:\n${childFiles.map((c) => `//  - ${c}`).join("\n") || "//  (Empty directory)"}`;
+      return `// Directory: ${cleanPath}\n// Child Items:\n${childFiles.map((c) => `//  - ${c}`).join("\n") || "//  (Empty directory)"}`;
     }
 
     if (this.files[cleanPath]?.content) return this.files[cleanPath].content;
@@ -315,6 +300,9 @@ export class AgentSession extends DurableObject {
     return "";
   }
 
+  /**
+   * Scans VM for exact files and directories (hierarchical + flat)
+   */
   public async refreshFilesAndFolders(): Promise<any[]> {
     const scanScript = `node -e '
       const fs = require("fs");
@@ -430,6 +418,7 @@ export class AgentSession extends DurableObject {
       return Response.json({ meta: this.meta, messages: this.messages, envVars: this.envVars }, { headers: corsHeaders });
     }
 
+    // Returns full hierarchical tree with accurate directory & file types
     if (url.pathname.endsWith("/tree") && request.method === "GET") {
       const tree = await this.refreshFilesAndFolders();
       return Response.json({ tree }, { headers: corsHeaders });
@@ -543,36 +532,6 @@ export class AgentSession extends DurableObject {
             },
           };
 
-          const isEnvModalRequest = /empty\s*env|env\s*box|enter.*env|credentials\s*box/i.test(userPrompt);
-          if (isEnvModalRequest) {
-            const envFields = [
-              { key: "GITHUB_TOKEN", label: "GitHub Personal Access Token", placeholder: "ghp_...", type: "password" },
-              { key: "CLOUDFLARE_API_TOKEN", label: "Cloudflare API Token", placeholder: "cfut_...", type: "password" },
-              { key: "CLOUDFLARE_ACCOUNT_ID", label: "Cloudflare Account ID", placeholder: "1b77c2a9...", type: "text" },
-              { key: "E2B_API_KEY", label: "E2B API Key", placeholder: "e2b_...", type: "password" },
-            ];
-
-            const group = await getOrCreateGroup("Environment Credentials Configuration");
-            const subAction: SubAction = {
-              id: String(subActionCounter++),
-              type: "env_box",
-              title: "Triggered Environment Modal for User Credentials",
-              status: "completed",
-              output: `[MODAL OPENED] Input your API keys and click Apply.`,
-            };
-            group.subActions.push(subAction);
-            updateGroupOutput(group);
-
-            await sendEvent({
-              actions: [...taskGroups],
-              type: "env_modal_open",
-              envBox: {
-                title: "Enter your environment variable to continue",
-                fields: envFields,
-              },
-            });
-          }
-
           let isFinished = false;
           let turn = 0;
           const conversationMessages = [
@@ -592,8 +551,6 @@ export class AgentSession extends DurableObject {
               aiResponseText = typeof aiRes === "string" ? aiRes : (aiRes.response || "");
             }
 
-            console.log(`[Turn ${turn}] AI Output:`, aiResponseText.slice(0, 150));
-
             const phaseMatch = aiResponseText.match(/<task_phase\s+title=["']([^"']+)["']>([\s\S]*?)<\/task_phase>/i);
             if (phaseMatch) {
               await getOrCreateGroup(phaseMatch[1].trim());
@@ -606,7 +563,7 @@ export class AgentSession extends DurableObject {
 
             let hasTools = false;
 
-            // 1. Python Execution (with automatic code-fence sanitization)
+            // 1. Python Execution
             let pyMatch;
             while ((pyMatch = pyRegex.exec(aiResponseText)) !== null) {
               hasTools = true;
@@ -739,7 +696,7 @@ export class AgentSession extends DurableObject {
               conversationMessages.push({ role: "user", content: `File Content of ${filePath}:\n${content}` });
             }
 
-            if (!hasTools && !isEnvModalRequest) {
+            if (!hasTools) {
               const tsxMatch = aiResponseText.match(/```(?:tsx|jsx|typescript|ts|javascript|js)([\s\S]*?)```/i);
               if (tsxMatch) {
                 const group = await getOrCreateGroup("UI Synthesis");
@@ -761,8 +718,6 @@ export class AgentSession extends DurableObject {
                 updateGroupOutput(group);
                 await sendEvent({ actions: [...taskGroups] });
               }
-              isFinished = true;
-            } else if (isEnvModalRequest) {
               isFinished = true;
             }
           }
