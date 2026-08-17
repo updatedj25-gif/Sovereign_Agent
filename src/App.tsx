@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  Folder, 
+  ChevronRight, 
+  ChevronDown, 
   Key, 
   Eye, 
   EyeOff, 
@@ -18,7 +19,10 @@ import {
   MessageSquare,
   Trash2,
   Square,
-  Plus
+  Plus,
+  Sparkles,
+  CheckCircle2,
+  AlertCircle
 } from 'lucide-react';
 
 interface FileNode {
@@ -53,6 +57,7 @@ interface SubAction {
   status: 'pending' | 'running' | 'completed' | 'error';
   command?: string;
   output?: string;
+  icon?: string;
 }
 
 interface TaskGroup {
@@ -67,6 +72,7 @@ interface TaskGroup {
 export default function App() {
   const [prompt, setPrompt] = useState('');
   const [taskGroups, setTaskGroups] = useState<TaskGroup[]>([]);
+  const [thoughts, setThoughts] = useState<{ text: string; turn?: number }[]>([]);
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [desktopTab, setDesktopTab] = useState<'preview' | 'code' | 'terminal'>('code');
   const [mobileTab, setMobileTab] = useState<'console' | 'preview' | 'code' | 'terminal'>('console');
@@ -76,9 +82,13 @@ export default function App() {
   
   const [fileTree, setFileTree] = useState<FileNode[]>([]);
   const [selectedFile, setSelectedFile] = useState<string>('');
-  const [fileContent, setFileContent] = useState<string>('// Select a file from the explorer');
+  const [fileContent, setFileContent] = useState<string>('// Select a file from the explorer sidebar');
   const [previewUrl, setPreviewUrl] = useState<string>('/api/sandbox/render-preview');
-  const [terminalLogs, setTerminalLogs] = useState<string[]>(['$ Sovereign Agent Sandbox Initialized']);
+  const [terminalLogs, setTerminalLogs] = useState<string[]>(['$ Sovereign Agent Phase 3 Interface Ready']);
+  
+  // Two-tier expansion state for action pills
+  const [expandedPills, setExpandedPills] = useState<Record<string, boolean>>({});
+  const [expandedSubRows, setExpandedSubRows] = useState<Record<string, boolean>>({});
   
   const [showEnvModal, setShowEnvModal] = useState<boolean>(false);
   const [envModalData, setEnvModalData] = useState<EnvModalData | null>(null);
@@ -86,6 +96,7 @@ export default function App() {
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({});
 
   const abortControllerRef = useRef<AbortController | null>(null);
+  const chatBottomRef = useRef<HTMLDivElement | null>(null);
 
   const fetchSessions = async () => {
     try {
@@ -121,18 +132,23 @@ export default function App() {
     fetchTree();
   }, [currentSessionId]);
 
+  useEffect(() => {
+    chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [taskGroups, thoughts]);
+
   const createNewSession = () => {
     const newId = `sovereign-session-${Date.now().toString(36)}`;
     setCurrentSessionId(newId);
     setTaskGroups([]);
+    setThoughts([]);
     setPrompt('');
     setFileTree([]);
     setSelectedFile('');
-    setFileContent('// Workspace initialized for new session');
+    setFileContent('// Workspace ready for new session');
   };
 
   const clearAllHistory = async () => {
-    if (!confirm('Are you sure you want to clear all session history?')) return;
+    if (!confirm('Clear all chat session history?')) return;
     try {
       await fetch('/api/sessions', { method: 'DELETE' });
       setSessions([]);
@@ -147,15 +163,12 @@ export default function App() {
     try {
       await fetch(`/api/sessions?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
       setSessions(prev => prev.filter(s => s.id !== id));
-      if (currentSessionId === id) {
-        createNewSession();
-      }
+      if (currentSessionId === id) createNewSession();
     } catch (e) {
       console.error(e);
     }
   };
 
-  // STOP / KILL ACTIVE TASK
   const handleKillTask = async () => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -190,6 +203,7 @@ export default function App() {
     const userPrompt = prompt;
     setPrompt('');
     setTaskGroups([]);
+    setThoughts([]);
     setIsRunning(true);
 
     const controller = new AbortController();
@@ -219,7 +233,12 @@ export default function App() {
           if (line.startsWith('data: ')) {
             try {
               const data = JSON.parse(line.replace('data: ', ''));
-              if (data.actions) setTaskGroups(data.actions);
+              if (data.type === 'thought') {
+                setThoughts(prev => [...prev, { text: data.text, turn: data.turn }]);
+              }
+              if (data.actions) {
+                setTaskGroups(data.actions);
+              }
               if (data.type === 'env_modal_open' && data.envBox) {
                 setEnvModalData(data.envBox);
                 setShowEnvModal(true);
@@ -244,15 +263,12 @@ export default function App() {
     }
   };
 
-  const getFileIcon = (name: string, isDir: boolean) => {
-    if (isDir) return <Folder className="w-3.5 h-3.5 text-amber-400 mr-1.5 shrink-0" />;
-    if (name.endsWith('.py')) return <span className="text-xs mr-1.5">🐍</span>;
-    if (name.endsWith('.tsx') || name.endsWith('.jsx')) return <FileCode className="w-3.5 h-3.5 text-cyan-400 mr-1.5 shrink-0" />;
-    if (name.endsWith('.ts') || name.endsWith('.js')) return <FileCode className="w-3.5 h-3.5 text-amber-400 mr-1.5 shrink-0" />;
-    if (name.endsWith('.json')) return <FileJson className="w-3.5 h-3.5 text-yellow-400 mr-1.5 shrink-0" />;
-    if (name.endsWith('.css')) return <FileCode className="w-3.5 h-3.5 text-sky-400 mr-1.5 shrink-0" />;
-    if (name.endsWith('.env')) return <Key className="w-3.5 h-3.5 text-emerald-400 mr-1.5 shrink-0" />;
-    return <FileText className="w-3.5 h-3.5 text-slate-400 mr-1.5 shrink-0" />;
+  const togglePill = (groupId: string) => {
+    setExpandedPills(prev => ({ ...prev, [groupId]: !prev[groupId] }));
+  };
+
+  const toggleSubRow = (subKey: string) => {
+    setExpandedSubRows(prev => ({ ...prev, [subKey]: !prev[subKey] }));
   };
 
   const getSubActionIcon = (type: string) => {
@@ -264,6 +280,17 @@ export default function App() {
       case 'env_box': return <Key className="w-3.5 h-3.5 text-amber-400 mr-1" />;
       default: return <Brain className="w-3.5 h-3.5 text-amber-300 mr-1" />;
     }
+  };
+
+  const getFileIcon = (name: string, isDir: boolean) => {
+    if (isDir) return <span className="mr-1.5 text-xs">📁</span>;
+    if (name.endsWith('.py')) return <span className="text-xs mr-1.5">🐍</span>;
+    if (name.endsWith('.tsx') || name.endsWith('.jsx')) return <FileCode className="w-3.5 h-3.5 text-cyan-400 mr-1.5 shrink-0" />;
+    if (name.endsWith('.ts') || name.endsWith('.js')) return <FileCode className="w-3.5 h-3.5 text-amber-400 mr-1.5 shrink-0" />;
+    if (name.endsWith('.json')) return <FileJson className="w-3.5 h-3.5 text-yellow-400 mr-1.5 shrink-0" />;
+    if (name.endsWith('.css')) return <FileCode className="w-3.5 h-3.5 text-sky-400 mr-1.5 shrink-0" />;
+    if (name.endsWith('.env')) return <Key className="w-3.5 h-3.5 text-emerald-400 mr-1.5 shrink-0" />;
+    return <FileText className="w-3.5 h-3.5 text-slate-400 mr-1.5 shrink-0" />;
   };
 
   return (
@@ -291,10 +318,9 @@ export default function App() {
         </div>
       </div>
 
-      {/* DESKTOP SIDEBAR WITH HISTORY & CLEAR BUTTONS */}
+      {/* DESKTOP SIDEBAR */}
       <div className="hidden md:flex w-64 border-r border-slate-800 bg-slate-900/70 flex-col justify-between p-3.5 shrink-0 overflow-hidden">
         <div className="flex flex-col h-full overflow-hidden">
-          {/* Logo & New Session */}
           <div className="flex items-center gap-2 font-bold text-amber-400 mb-4 text-sm shrink-0">
             <span className="p-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30">⚡</span>
             SOVEREIGN AGENT
@@ -304,8 +330,7 @@ export default function App() {
             onClick={createNewSession}
             className="w-full flex items-center justify-center gap-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold py-2 px-3 rounded-xl mb-3 transition shadow-lg shrink-0"
           >
-            <Plus className="w-4 h-4" />
-            New Session
+            <Plus className="w-4 h-4" /> New Session
           </button>
 
           <button 
@@ -315,7 +340,6 @@ export default function App() {
                 fields: [
                   { key: "GITHUB_TOKEN", label: "GitHub Personal Access Token", placeholder: "ghp_...", type: "password" },
                   { key: "CLOUDFLARE_API_TOKEN", label: "Cloudflare API Token", placeholder: "cfut_...", type: "password" },
-                  { key: "CLOUDFLARE_ACCOUNT_ID", label: "Cloudflare Account ID", placeholder: "1b77c2a9...", type: "text" },
                   { key: "E2B_API_KEY", label: "E2B API Key", placeholder: "e2b_...", type: "password" }
                 ]
               });
@@ -323,25 +347,18 @@ export default function App() {
             }}
             className="w-full flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold py-2 px-3 rounded-xl text-amber-300 mb-4 transition shrink-0"
           >
-            <Key className="w-3.5 h-3.5" />
-            Environment Box (.env)
+            <Key className="w-3.5 h-3.5" /> Environment Box (.env)
           </button>
 
-          {/* Recent Sessions List Header with Clear All Button */}
           <div className="flex items-center justify-between px-1 pb-2 border-b border-slate-800/80 mb-2 shrink-0">
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Recent Sessions ({sessions.length})</span>
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Sessions ({sessions.length})</span>
             {sessions.length > 0 && (
-              <button 
-                onClick={clearAllHistory}
-                title="Clear All History"
-                className="text-slate-500 hover:text-red-400 flex items-center gap-1 text-[10px] transition"
-              >
+              <button onClick={clearAllHistory} className="text-slate-500 hover:text-red-400 flex items-center gap-1 text-[10px]">
                 <Trash2 className="w-3 h-3" /> Clear All
               </button>
             )}
           </div>
 
-          {/* Scrollable Sessions List */}
           <div className="flex-1 overflow-y-auto space-y-1 pr-1">
             {sessions.map(s => (
               <div 
@@ -357,11 +374,7 @@ export default function App() {
                   <MessageSquare className="w-3.5 h-3.5 shrink-0 text-slate-500 group-hover:text-amber-400" />
                   <span className="truncate">{s.title}</span>
                 </div>
-                <button 
-                  onClick={(e) => deleteSingleSession(s.id, e)}
-                  title="Delete Session"
-                  className="opacity-0 group-hover:opacity-100 p-1 hover:text-red-400 transition"
-                >
+                <button onClick={(e) => deleteSingleSession(s.id, e)} className="opacity-0 group-hover:opacity-100 p-1 hover:text-red-400">
                   <Trash2 className="w-3 h-3" />
                 </button>
               </div>
@@ -371,79 +384,110 @@ export default function App() {
 
         <div className="text-[11px] text-slate-500 font-mono flex items-center gap-2 pt-3 border-t border-slate-800/80 shrink-0">
           <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-          E2B Sandbox Connected
+          E2B Linux Micro-VM Active
         </div>
       </div>
 
-      {/* MIDDLE: AGENT CONSOLE & CHAT WITH KILL BUTTON */}
-      <div className={`${mobileTab === 'console' ? 'flex' : 'hidden md:flex'} flex-1 flex-col min-w-0 border-r border-slate-800 bg-slate-950/40`}>
+      {/* MIDDLE: CHAT CONSOLE WITH ACTION PILLS & TWO-TIER EXPANSION */}
+      <div className={`${mobileTab === 'console' ? 'flex' : 'hidden md:flex'} flex-1 flex-col min-w-0 border-r border-slate-800 bg-slate-950/40 relative`}>
         <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4">
           <div className="text-xs font-mono text-slate-400 flex items-center justify-between">
             <span>Workspace: <span className="text-amber-400 font-semibold">{currentSessionId}</span></span>
             {isRunning && (
               <span className="text-xs font-mono text-amber-400 flex items-center gap-1.5 animate-pulse">
-                <span className="w-2 h-2 rounded-full bg-amber-500"></span> Agent Running...
+                <span className="w-2 h-2 rounded-full bg-amber-500"></span> Executing...
               </span>
             )}
           </div>
 
-          {/* Subtask Accordions */}
-          <div className="space-y-4">
-            {taskGroups.map(group => (
-              <div key={group.id} className="border border-slate-800 bg-slate-900/90 rounded-2xl overflow-hidden shadow-xl">
-                <div className="flex items-center justify-between p-3.5 bg-slate-900 border-b border-slate-800/80">
-                  <span className="text-xs font-bold text-amber-300 flex items-center gap-2">
-                    <span className="w-5 h-5 rounded-full bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-[10px]">
-                      {group.id}
+          {/* Conversational Reasoning Thoughts (Think-Aloud Blocks) */}
+          {thoughts.map((t, idx) => (
+            <div key={idx} className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-3 text-xs text-slate-300 leading-relaxed font-sans shadow-sm">
+              <div className="flex items-center gap-1.5 text-amber-400/90 font-semibold text-[11px] mb-1">
+                <Brain className="w-3.5 h-3.5" />
+                <span>Reasoning {t.turn ? `(Turn ${t.turn})` : ''}</span>
+              </div>
+              <p className="whitespace-pre-wrap">{t.text}</p>
+            </div>
+          ))}
+
+          {/* Action Pills & Two-Tier Sub-Accordions */}
+          <div className="space-y-3">
+            {taskGroups.map(group => {
+              const isPillOpen = expandedPills[group.id] ?? true;
+              const subList = group.subActions || [];
+
+              return (
+                <div key={group.id} className="space-y-2">
+                  {/* Compact Action Pill Capsule (Matching Reference Screenshots) */}
+                  <div 
+                    onClick={() => togglePill(group.id)}
+                    className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-slate-900 border border-slate-800/90 hover:border-slate-700 cursor-pointer shadow-md transition select-none"
+                  >
+                    <div className="flex items-center -space-x-0.5 text-xs">
+                      {subList.slice(0, 4).map((sub, i) => (
+                        <span key={i} className="inline-block">{getSubActionIcon(sub.type)}</span>
+                      ))}
+                    </div>
+                    <span className="text-xs font-mono text-slate-300 font-semibold">
+                      {subList.length} action{subList.length === 1 ? '' : 's'}
                     </span>
-                    {group.title}
-                  </span>
-                  <span className={`text-[10px] px-2.5 py-0.5 rounded-full font-mono font-semibold ${
-                    group.status === 'completed' 
-                      ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' 
-                      : group.status === 'error'
-                      ? 'bg-red-500/20 text-red-400 border border-red-500/30'
-                      : 'bg-amber-500/20 text-amber-400 border border-amber-500/30 animate-pulse'
-                  }`}>
-                    {group.status === 'completed' ? '✓ DONE' : group.status.toUpperCase()}
-                  </span>
-                </div>
+                    {group.status === 'completed' && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 ml-1" />}
+                    {group.status === 'error' && <AlertCircle className="w-3.5 h-3.5 text-red-400 ml-1" />}
+                    {group.status === 'running' && <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse ml-1" />}
+                    {isPillOpen ? <ChevronDown className="w-3.5 h-3.5 text-slate-400 ml-1" /> : <ChevronRight className="w-3.5 h-3.5 text-slate-400 ml-1" />}
+                  </div>
 
-                <div className="p-2 space-y-2 bg-slate-950/60">
-                  {(group.subActions && group.subActions.length > 0) ? (
-                    group.subActions.map(sub => (
-                      <div key={sub.id} className="border border-slate-800/80 bg-slate-900/60 rounded-xl overflow-hidden">
-                        <div className="flex items-center justify-between px-3 py-2 text-xs font-mono text-slate-200">
-                          <div className="flex items-center gap-1 truncate">
-                            {getSubActionIcon(sub.type)}
-                            <span className="truncate">{sub.title}</span>
-                          </div>
-                          <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono shrink-0 ${
-                            sub.status === 'completed' ? 'text-emerald-400 bg-emerald-500/10' : 'text-amber-400 bg-amber-500/10 animate-pulse'
-                          }`}>
-                            {sub.status.toUpperCase()}
-                          </span>
-                        </div>
-
-                        {sub.output && (
-                          <div className="px-3 py-2 bg-black/80 font-mono text-[11px] text-slate-300 whitespace-pre-wrap border-t border-slate-800/60 leading-relaxed overflow-x-auto">
-                            {sub.output}
-                          </div>
-                        )}
+                  {/* Expanded Sub-Accordions (Tier 2 View) */}
+                  {isPillOpen && subList.length > 0 && (
+                    <div className="border border-slate-800/80 bg-slate-900/90 rounded-2xl p-2.5 space-y-2 shadow-xl animate-fadeIn">
+                      <div className="flex items-center justify-between px-2 pb-1 border-b border-slate-800/60 text-[11px] font-mono text-slate-400 font-semibold">
+                        <span>{group.title}</span>
+                        <button onClick={() => togglePill(group.id)} className="text-slate-500 hover:text-amber-400 text-[10px]">^ Show less</button>
                       </div>
-                    ))
-                  ) : (
-                    <div className="p-3 font-mono text-xs text-slate-400">
-                      {group.output || 'Executing task...'}
+
+                      {subList.map(sub => {
+                        const subKey = `${group.id}-${sub.id}`;
+                        const isSubRowOpen = expandedSubRows[subKey] ?? true;
+
+                        return (
+                          <div key={sub.id} className="border border-slate-800/70 bg-slate-950/70 rounded-xl overflow-hidden">
+                            <div 
+                              onClick={() => toggleSubRow(subKey)}
+                              className="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-slate-800/50 transition"
+                            >
+                              <div className="flex items-center gap-1.5 text-xs font-mono text-slate-200 truncate">
+                                {getSubActionIcon(sub.type)}
+                                <span className="truncate">{sub.title}</span>
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono ${
+                                  sub.status === 'completed' ? 'text-emerald-400 bg-emerald-500/10' : sub.status === 'error' ? 'text-red-400 bg-red-500/10' : 'text-amber-400 bg-amber-500/10 animate-pulse'
+                                }`}>
+                                  {sub.status.toUpperCase()}
+                                </span>
+                                {isSubRowOpen ? <ChevronDown className="w-3 h-3 text-slate-400" /> : <ChevronRight className="w-3 h-3 text-slate-400" />}
+                              </div>
+                            </div>
+
+                            {isSubRowOpen && sub.output && (
+                              <div className="px-3 py-2 bg-black font-mono text-[11px] text-slate-300 whitespace-pre-wrap border-t border-slate-800/60 leading-relaxed overflow-x-auto">
+                                {sub.output}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
+          <div ref={chatBottomRef} />
         </div>
 
-        {/* Input Bar with Send & Red Stop / Kill Button */}
+        {/* Input Bar with Red Kill Button */}
         <div className="p-4 border-t border-slate-800 bg-slate-900/40">
           <div className="flex gap-2">
             <input 
@@ -451,26 +495,23 @@ export default function App() {
               disabled={isRunning}
               onChange={e => setPrompt(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && !isRunning && runAgent()}
-              placeholder={isRunning ? "Agent is currently executing tasks..." : "Describe what you want to build or run..."}
+              placeholder={isRunning ? "Agent is executing tools in micro-VM..." : "Describe what you want to build or run..."}
               className="flex-1 bg-slate-800/80 border border-slate-700 rounded-xl px-4 py-2.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-amber-500 disabled:opacity-60"
             />
 
-            {/* Dynamic Send / Kill Button */}
             {isRunning ? (
               <button 
                 onClick={handleKillTask} 
                 className="bg-red-500 hover:bg-red-600 text-white font-bold px-4 py-2.5 rounded-xl text-xs flex items-center gap-1.5 transition shadow-lg shadow-red-500/30 animate-pulse"
               >
-                <Square className="w-3.5 h-3.5 fill-current" />
-                Stop
+                <Square className="w-3.5 h-3.5 fill-current" /> Stop
               </button>
             ) : (
               <button 
                 onClick={runAgent} 
                 className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-4 py-2.5 rounded-xl text-xs flex items-center gap-1.5 transition"
               >
-                <Send className="w-3.5 h-3.5" />
-                Send
+                <Send className="w-3.5 h-3.5" /> Send
               </button>
             )}
           </div>
@@ -547,7 +588,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* ENV MODAL */}
+      {/* GOOGLE AI STUDIO-STYLE ENV MODAL */}
       {showEnvModal && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col">

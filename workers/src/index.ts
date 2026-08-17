@@ -26,6 +26,16 @@ export interface SubAction {
   status: "pending" | "running" | "completed" | "error";
   command?: string;
   output?: string;
+  icon?: string;
+}
+
+export interface ActionBatch {
+  id: string;
+  phaseTitle: string;
+  icons: string[];
+  count: number;
+  status: "pending" | "running" | "completed" | "error";
+  actions: SubAction[];
 }
 
 export interface TaskGroup {
@@ -37,34 +47,43 @@ export interface TaskGroup {
   subActions: SubAction[];
 }
 
-const SYSTEM_PROMPT = `You are Sovereign Agent, a Senior Staff Software Engineer running inside an E2B Linux VM.
+const SYSTEM_PROMPT = `You are Sovereign Agent, a Senior Staff Autonomous Software Engineer running inside an E2B Linux Micro-VM.
 
-AVAILABLE TOOLS:
-1. Write file (ALWAYS specify clean relative paths):
-<write_file path="folder_name/filename.ext">
-// Code content
-</write_file>
+EXECUTION & PLANNING RULES:
+1. Speak in short, conversational paragraphs explaining what you plan to do before/after running tools.
+2. Declare a milestone phase:
+<task_phase title="Calculating Statistics & Writing Files">
+Explanation of current milestone.
+</task_phase>
 
-2. Execute bash command:
-<execute_command>
-mkdir -p folder_name && echo '{"status":"ok"}' > folder_name/config.json
-</execute_command>
-
-3. Execute Python 3:
+3. For Python calculations: Python's built-in standard library (math, statistics, json, os, sys) is pre-installed. Prefer built-in modules or run "pip install <package>" if needed:
 <execute_python>
-import json, os
-os.makedirs("folder_name", exist_ok=True)
-with open("folder_name/config.json", "w") as f:
-    json.dump({"status": "ok"}, f, indent=2)
-print("Saved config")
+import statistics, json, os
+nums = [5, 15, 25, 35, 45]
+sd = statistics.stdev(nums)
+os.makedirs("stats", exist_ok=True)
+with open("stats/sd.json", "w") as f:
+    json.dump({"numbers": nums, "standard_deviation": sd}, f, indent=2)
+print("Computed SD:", sd)
 </execute_python>
 
-4. Read file:
-<read_file path="folder_name/filename.ext" />
+4. Execute Bash commands:
+<execute_command>
+mkdir -p stats && ls -la stats
+</execute_command>
 
-CRITICAL RULES:
-- Never use "/home/user/" or leading slashes in paths. Use relative paths like "test_app/config.json".
-- When asked to create a Vite app, run non-interactive: "npm create vite@latest <name> -- --template react-ts --yes".`;
+5. Write files with full relative paths:
+<write_file path="stats/sd.json">
+{"standard_deviation": 15.81}
+</write_file>
+
+6. Read files:
+<read_file path="stats/sd.json" />
+
+7. COMPLETION: Only when all actions have run and succeeded, conclude with:
+<task_completed>
+Summary of results.
+</task_completed>`;
 
 function cleanPath(raw: string): string {
   let p = raw.trim();
@@ -241,7 +260,6 @@ export class AgentSession extends DurableObject {
     const sbx = await this.getSandboxInstance();
     if (sbx) {
       try {
-        console.log(`[E2B VM ${sbx.sandboxId}]: $ ${cmd}`);
         const result = await sbx.commands.run(cmd);
         return {
           stdout: result.stdout || "",
@@ -256,10 +274,11 @@ export class AgentSession extends DurableObject {
     return { stdout: `[Virtual DO] Executed: ${cmd}`, stderr: "", exitCode: 0, mode: "Virtual DO" };
   }
 
+  // Redirect stderr to stdout (2>&1) so Python tracebacks are captured completely
   public async runPython(rawCode: string): Promise<{ stdout: string; stderr: string; exitCode: number; mode: string }> {
     const cleanPy = cleanBlockContent(rawCode);
     const b64 = btoa(unescape(encodeURIComponent(cleanPy)));
-    const runScript = `mkdir -p /tmp && echo "${b64}" | base64 -d > /tmp/runner.py && python3 -u /tmp/runner.py`;
+    const runScript = `mkdir -p /tmp && echo "${b64}" | base64 -d > /tmp/runner.py && python3 -u /tmp/runner.py 2>&1`;
     return await this.runCommand(runScript);
   }
 
@@ -293,7 +312,7 @@ export class AgentSession extends DurableObject {
 
     if (this.files[p]?.type === "directory") {
       const childFiles = Object.keys(this.files).filter((k) => k.startsWith(p + "/") && k !== p);
-      return `// Directory: ${p}\n// Files inside:\n${childFiles.map((c) => `//  - ${c}`).join("\n") || "//  (Empty directory)"}`;
+      return `// Directory: ${p}\n// Contents:\n${childFiles.map((c) => `//  - ${c}`).join("\n") || "//  (Empty directory)"}`;
     }
 
     if (this.files[p]?.content) return this.files[p].content;
@@ -405,13 +424,11 @@ export class AgentSession extends DurableObject {
 
     if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
-    // 1. Abort / Kill active task
     if (url.pathname.endsWith("/stop") && request.method === "POST") {
       this.isAborted = true;
       return Response.json({ success: true, message: "Kill signal processed" }, { headers: corsHeaders });
     }
 
-    // 2. Clear Session Data
     if (url.pathname.endsWith("/clear") && request.method === "POST") {
       this.messages = [];
       this.files = {};
@@ -472,6 +489,7 @@ export class AgentSession extends DurableObject {
       return new Response(html, { headers: { "Content-Type": "text/html; charset=UTF-8", ...corsHeaders } });
     }
 
+    // PHASE 3: EVENT PROTOCOL & REACT ORCHESTRATOR
     if (url.pathname.endsWith("/stream") && request.method === "POST") {
       const body = (await request.json()) as { prompt?: string; sessionId?: string };
       const userPrompt = body.prompt || "Run task";
@@ -511,6 +529,8 @@ export class AgentSession extends DurableObject {
             };
             taskGroups.push(newGroup);
             currentGroup = newGroup;
+
+            await sendEvent({ type: "phase_start", title, id: newGroup.id });
             await sendEvent({ actions: [...taskGroups] });
             return newGroup;
           };
@@ -533,20 +553,28 @@ export class AgentSession extends DurableObject {
             },
           };
 
+          await sendEvent({
+            type: "thought",
+            text: `Analyzing objective: "${userPrompt}". Inspecting tools and environment.`,
+          });
+
           let isFinished = false;
           let turn = 0;
+          let finalCompletionSummary = "";
+          let hadErrorsInTurn = false;
           const conversationMessages = [
             { role: "system", content: SYSTEM_PROMPT },
             ...this.messages.map((m) => ({ role: m.role, content: m.content })),
           ];
 
-          while (!isFinished && turn < 4) {
+          while (!isFinished && turn < 5) {
             if (this.isAborted) {
               await sendEvent({ type: "aborted", message: "Task stopped by user" });
               break;
             }
 
             turn++;
+            hadErrorsInTurn = false;
 
             let aiResponseText = "";
             if (this.env.AI) {
@@ -558,6 +586,21 @@ export class AgentSession extends DurableObject {
             }
 
             if (this.isAborted) break;
+
+            const cleanThought = aiResponseText
+              .replace(/<task_phase[\s\S]*?<\/task_phase>/gi, "")
+              .replace(/<task_completed[\s\S]*?<\/task_completed>/gi, "")
+              .replace(/<execute_python>[\s\S]*?<\/execute_python>/gi, "")
+              .replace(/<execute_command>[\s\S]*?<\/execute_command>/gi, "")
+              .replace(/<write_file[\s\S]*?<\/write_file>/gi, "")
+              .replace(/<read_file[\s\S]*?\/>/gi, "")
+              .replace(/<request_env_box[\s\S]*?<\/request_env_box>/gi, "")
+              .replace(/```[\s\S]*?```/gi, "")
+              .trim();
+
+            if (cleanThought.length > 5) {
+              await sendEvent({ type: "thought", turn, text: cleanThought });
+            }
 
             const phaseMatch = aiResponseText.match(/<task_phase\s+title=["']([^"']+)["']>([\s\S]*?)<\/task_phase>/i);
             if (phaseMatch) {
@@ -571,7 +614,7 @@ export class AgentSession extends DurableObject {
 
             let hasTools = false;
 
-            // 1. Python Execution
+            // 1. Python Execution Tool
             let pyMatch;
             while ((pyMatch = pyRegex.exec(aiResponseText)) !== null) {
               if (this.isAborted) break;
@@ -586,24 +629,30 @@ export class AgentSession extends DurableObject {
                 status: "running",
                 command: `python3 -u runner.py`,
                 output: `>>> Executing Python script in micro-VM...\n`,
+                icon: "🐍",
               };
               group.subActions.push(subAction);
               updateGroupOutput(group);
+
+              await sendEvent({ type: "action_batch", groupId: group.id, actionId: subAction.id, subAction });
               await sendEvent({ actions: [...taskGroups] });
 
               const pyResult = await this.runPython(cleanPyCode);
               const fullLog = `>>> Python Output:\n${pyResult.stdout || ""}${pyResult.stderr ? `\n[PYTHON TRACEBACK / STDERR]\n${pyResult.stderr}` : ""}\n[Exit Code: ${pyResult.exitCode}]`;
 
               subAction.status = pyResult.exitCode === 0 ? "completed" : "error";
+              if (pyResult.exitCode !== 0) hadErrorsInTurn = true;
               subAction.output = fullLog;
               updateGroupOutput(group);
+
+              await sendEvent({ type: "action_update", groupId: group.id, actionId: subAction.id, status: subAction.status, output: fullLog });
               await sendEvent({ actions: [...taskGroups] });
 
               conversationMessages.push({ role: "assistant", content: `<execute_python>${cleanPyCode}</execute_python>` });
-              conversationMessages.push({ role: "user", content: `Python Execution Output:\n${fullLog}` });
+              conversationMessages.push({ role: "user", content: `Python Output (Exit Code ${pyResult.exitCode}):\n${fullLog}` });
             }
 
-            // 2. Bash Execution
+            // 2. Bash Execution Tool
             let cmdMatch;
             while ((cmdMatch = cmdRegex.exec(aiResponseText)) !== null) {
               if (this.isAborted) break;
@@ -618,24 +667,30 @@ export class AgentSession extends DurableObject {
                 status: "running",
                 command: cmd,
                 output: `$ ${cmd}\n[E2B VM] Executing...\n`,
+                icon: ">_",
               };
               group.subActions.push(subAction);
               updateGroupOutput(group);
+
+              await sendEvent({ type: "action_batch", groupId: group.id, actionId: subAction.id, subAction });
               await sendEvent({ actions: [...taskGroups] });
 
               const cmdResult = await this.runCommand(cmd);
               const fullLog = `$ ${cmd}\n${cmdResult.stdout || ""}${cmdResult.stderr ? `\n[STDERR]\n${cmdResult.stderr}` : ""}\n[Exit Code: ${cmdResult.exitCode}]`;
 
               subAction.status = cmdResult.exitCode === 0 ? "completed" : "error";
+              if (cmdResult.exitCode !== 0) hadErrorsInTurn = true;
               subAction.output = fullLog;
               updateGroupOutput(group);
+
+              await sendEvent({ type: "action_update", groupId: group.id, actionId: subAction.id, status: subAction.status, output: fullLog });
               await sendEvent({ actions: [...taskGroups] });
 
               conversationMessages.push({ role: "assistant", content: `<execute_command>${cmd}</execute_command>` });
               conversationMessages.push({ role: "user", content: `Command Output:\n${fullLog}` });
             }
 
-            // 3. Write Files
+            // 3. Write Files Tool
             let writeMatch;
             while ((writeMatch = writeRegex.exec(aiResponseText)) !== null) {
               if (this.isAborted) break;
@@ -652,9 +707,12 @@ export class AgentSession extends DurableObject {
                 status: "running",
                 command: `write_file ${filePath}`,
                 output: `Writing ${content.length} bytes to ${filePath}...`,
+                icon: "📄",
               };
               group.subActions.push(subAction);
               updateGroupOutput(group);
+
+              await sendEvent({ type: "action_batch", groupId: group.id, actionId: subAction.id, subAction });
               await sendEvent({ actions: [...taskGroups] });
 
               await this.writeFile(filePath, content);
@@ -665,13 +723,15 @@ export class AgentSession extends DurableObject {
               subAction.status = "completed";
               subAction.output = `[SUCCESS] Created ${filePath} (${content.length} bytes)`;
               updateGroupOutput(group);
+
+              await sendEvent({ type: "action_update", groupId: group.id, actionId: subAction.id, status: "completed", output: subAction.output });
               await sendEvent({ actions: [...taskGroups] });
 
               conversationMessages.push({ role: "assistant", content: `<write_file path="${filePath}">...</write_file>` });
               conversationMessages.push({ role: "user", content: `File ${filePath} written successfully.` });
             }
 
-            // 4. Read Files
+            // 4. Read Files Tool
             let readMatch;
             while ((readMatch = readRegex.exec(aiResponseText)) !== null) {
               if (this.isAborted) break;
@@ -686,22 +746,32 @@ export class AgentSession extends DurableObject {
                 status: "running",
                 command: `cat ${filePath}`,
                 output: `Reading ${filePath}...`,
+                icon: "📖",
               };
               group.subActions.push(subAction);
               updateGroupOutput(group);
+
+              await sendEvent({ type: "action_batch", groupId: group.id, actionId: subAction.id, subAction });
               await sendEvent({ actions: [...taskGroups] });
 
               const content = await this.readFile(filePath);
               subAction.status = "completed";
-              subAction.output = content ? content.slice(0, 800) : "[File empty or not found]";
+              subAction.output = content ? content.slice(0, 1000) : "[File empty or not found]";
               updateGroupOutput(group);
+
+              await sendEvent({ type: "action_update", groupId: group.id, actionId: subAction.id, status: "completed", output: subAction.output });
               await sendEvent({ actions: [...taskGroups] });
 
               conversationMessages.push({ role: "assistant", content: `<read_file path="${filePath}" />` });
               conversationMessages.push({ role: "user", content: `File Content of ${filePath}:\n${content}` });
             }
 
-            if (!hasTools) {
+            // Only terminate if NO tools had errors in this turn
+            const completedMatch = aiResponseText.match(/<task_completed>([\s\S]*?)<\/task_completed>/i);
+            if (completedMatch && !hadErrorsInTurn) {
+              finalCompletionSummary = completedMatch[1].trim();
+              isFinished = true;
+            } else if (!hasTools) {
               isFinished = true;
             }
           }
@@ -723,10 +793,9 @@ export class AgentSession extends DurableObject {
 
           const previewUrl = `/api/sandbox/render-preview?sessionId=${encodeURIComponent(sessionId)}`;
           await sendEvent({ type: "preview_ready", previewUrl });
-          await sendEvent({ 
-            type: "stream_finished", 
-            finalResponse: this.isAborted ? "Execution stopped by user." : `Task finished for "${userPrompt}".` 
-          });
+          
+          const completionMsg = finalCompletionSummary || (this.isAborted ? "Execution stopped by user." : `Task finished for "${userPrompt}".`);
+          await sendEvent({ type: "stream_finished", finalResponse: completionMsg });
         } catch (err: any) {
           console.error("[Stream Error]:", err);
           await sendEvent({ type: "error", error: err.message });
@@ -771,7 +840,7 @@ export default {
         {
           status: "ok",
           worker: "sovereign-agent-replit",
-          architecture: "Cloudflare Workers + Durable Objects + Workers AI + Abort Engine",
+          architecture: "Cloudflare Workers + Durable Objects + Phase 3 Action Pill Engine",
           timestamp: new Date().toISOString(),
         },
         { headers: corsHeaders }
@@ -783,7 +852,6 @@ export default {
       return env.AGENT_SESSION.get(id);
     };
 
-    // Kill / Stop endpoint
     if (url.pathname === "/api/agent/stop" && request.method === "POST") {
       const body = (await request.clone().json()) as { sessionId?: string };
       const sessionId = body.sessionId || "sovereign-session-default";
@@ -791,19 +859,16 @@ export default {
       return stub.fetch(new Request("https://session-do/stop", request));
     }
 
-    // Clear All Sessions from KV
     if (url.pathname === "/api/sessions" && request.method === "DELETE") {
       const queryId = url.searchParams.get("id");
       if (env.SOVEREIGN_KV) {
         if (queryId) {
-          // Delete single session
           let list: SessionMeta[] = [];
           const raw = await env.SOVEREIGN_KV.get("sovereign_sessions_index");
           if (raw) list = JSON.parse(raw);
           list = list.filter((s) => s.id !== queryId);
           await env.SOVEREIGN_KV.put("sovereign_sessions_index", JSON.stringify(list));
         } else {
-          // Delete all sessions
           await env.SOVEREIGN_KV.delete("sovereign_sessions_index");
         }
       }
@@ -853,17 +918,26 @@ export default {
     }
 
     if (url.pathname === "/api/sandbox/file" && request.method === "POST") {
-      const body = (await request.clone().json()) as { sessionId?: string };
-      const sessionId = body.sessionId || "sovereign-session-default";
-      const stub = getSessionStub(sessionId);
-      return stub.fetch(new Request("https://session-do/file", request));
+      const body = (await request.clone().json()) as { filePath?: string };
+      const path = cleanPath(body.filePath || "src/App.tsx");
+      const content = await this.readFile(path);
+      return Response.json({ content: content || "// Empty file" }, { headers: corsHeaders });
     }
 
     if (url.pathname === "/api/sandbox/exec" && request.method === "POST") {
-      const body = (await request.clone().json()) as { sessionId?: string };
-      const sessionId = body.sessionId || "sovereign-session-default";
-      const stub = getSessionStub(sessionId);
-      return stub.fetch(new Request("https://session-do/exec", request));
+      const body = (await request.clone().json()) as { command?: string; cmd?: string };
+      const cmd = body.command || body.cmd || "ls -la";
+      const result = await this.runCommand(cmd);
+      return Response.json(
+        {
+          command: cmd,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          exitCode: result.exitCode,
+          sandbox: result.mode,
+        },
+        { headers: corsHeaders }
+      );
     }
 
     if (url.pathname === "/api/sandbox/render-preview") {
@@ -904,6 +978,6 @@ export default {
       if (assetResponse.status !== 404) return assetResponse;
     }
 
-    return new Response("Sovereign Agent Direct Gateway", { status: 200, headers: corsHeaders });
+    return new Response("Sovereign Agent Phase 3 Gateway", { status: 200, headers: corsHeaders });
   },
 };
